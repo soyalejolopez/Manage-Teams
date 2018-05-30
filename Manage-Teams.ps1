@@ -8,26 +8,37 @@ THIS CODE IS PROVIDED AS IS WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESS OR IMPL
 Script to generate Teams reports. 
 
 What this script does: 
-    0) Connect to AzureAD and Office 365
-    1) Get Teams
-        Properties: "GroupId","GroupName","WhenCreated","PrimarySMTPAddress","GroupGuestSetting","GroupAccessType","GroupClassification","GroupMemberCount","GroupExtMemberCount","SPOSiteUrl","SPOStorageUsed","SPOtorageQuota","SPOSharingSetting"
-    2) Get Teams Membership
+    0) Check Script Pre-requisites
+    1) Connect to O365
+    2) Get Teams
+        Properties: "GroupId","GroupName","TeamsEnabled","ManagedBy","WhenCreated","PrimarySMTPAddress","GroupGuestSetting","GroupAccessType","GroupClassification","GroupMemberCount","GroupExtMemberCount","SPOSiteUrl","SPOStorageUsed","SPOtorageQuota","SPOSharingSetting"
+    3) Get Teams Membership
         Properties: "TeamID","TeamName","Member","Name","RecipientType","Membership"
-    3) Get Teams That Are Not Active
+    4) Get Teams That Are Not Active
         Properties: "TeamID","TeamName","PrimarySMTPAddress","MailboxStatus","LastConversationDate","NumOfConversations","SPOStatus","LastContentModified","StorageUsageCurrent" 
-    4) Get Users That Are Allowed To Create Teams
+    5) Get Users That Are Allowed To Create Teams
         Properties: "ObjectID","DisplayName","UserPrincipalName","UserType" 
-    5) Get Teams Tenant Settings
+    6) Get Teams Tenant Settings
         Settings captured: Azure AD Group Settings, Who's Allowed to Create Teams, Guest Access, Expiration Policy
-    6) Get All Above Reports 
-    7) Exit Script
+    7) Get Groups/Teams Without Owner(s)
+        Properties: "GroupID","GroupName","HasOwners","ManagedBy"
+    8) Get All Above Reports
+    9) Get Teams By User
+        Properties: "User","GroupId","GroupName","TeamsEnabled","IsOwner"
+    10) Exit Script
 
-CREDIT: 
-    Built on top of the great work from the following individuals:
-        Get-Teams function - David Whitney (dawhitne@microsoft.com)
-        Get-ObseleteGroup function - Tony Redmond (https://gallery.technet.microsoft.com/Check-for-obsolete-Office-c0020a42)
+REQUIREMENTS: 
+    -Powershell v3+ 
+    -Azureadpreview Module - https://www.powershellgallery.com/packages/AzureADPreview/2.0.0.17
+    -Teams module - https://www.powershellgallery.com/packages/MicrosoftTeams/0.9.0
+    -SPO module - https://www.microsoft.com/en-us/download/details.aspx?id=35588 
+    -SFBO module - https://www.microsoft.com/en-us/download/details.aspx?id=39366
+    -EXO/SCC Click Once App for MFA - https://docs.microsoft.com/en-us/powershell/exchange/office-365-scc/connect-to-scc-powershell/mfa-connect-to-scc-powershell?view=exchange-ps
+
 VERSION:
-    02072018 - v1
+    05302018: Added MFA Logon Capability, Teams by User, Teams without Owners
+    02072018: v1
+
 AUTHOR(S): 
     Alejandro Lopez - Alejanl@Microsoft.com
 
@@ -42,9 +53,23 @@ AUTHOR(S):
 #Check installed modules
 Function Check-Modules{
     Write-LogEntry -LogName:$Log -LogEntryText "Pre-Flight Check" -ForegroundColor White        
+    $needPowershellUpdated = $false
+    $needAADPModuleInstall = $false
+    $needTeamsModuleInstall = $false
+    $needSPOModule = $false
+    $needMSOAssistant = $false
+    $needSkypeModule = $false
+    $needEXOMFAModule = $false
+    ""
+    $acctHasMFA = Read-Host "Is your account enabled for MFA? (Y/N)"
+    ""
 
     If($host.version.major -lt 3){
-        throw "Powershell V3+ is required. Contact your administrator"
+        Write-LogEntry -LogName:$Log -LogEntryText "Powershell V3+: Missing" -ForegroundColor Yellow        
+        $needPowershellUpdated = $true
+    }
+    Else{
+        Write-LogEntry -LogName:$Log -LogEntryText "Powershell V3+" -ForegroundColor Green        
     }
 
     $aadmodule = get-module -listavailable azureadpreview
@@ -54,12 +79,73 @@ Function Check-Modules{
         $checkaadpversion = (get-module -listavailable azureadpreview | select -expandproperty version).revision
         If($reqAADPMinRevision -gt $checkaadpversion){
             $needAADPModuleInstall = $true
+            Write-LogEntry -LogName:$Log -LogEntryText "AzureADPreview 2.0.0.137+: Missing" -ForegroundColor Yellow 
+        }
+        Else{
+            Write-LogEntry -LogName:$Log -LogEntryText "AzureADPreview 2.0.0.137+" -ForegroundColor Green 
         }
     }
-    Else{$needAADPModuleInstall = $true}
+    Else{
+        $needAADPModuleInstall = $true
+        Write-LogEntry -LogName:$Log -LogEntryText "AzureADPreview 2.0.0.137+: Missing" -ForegroundColor Yellow 
+    }
+
+    If(!(get-module -listavailable MicrosoftTeams)){
+        Write-LogEntry -LogName:$Log -LogEntryText "MicrosoftTeams Module: Missing" -ForegroundColor Yellow
+        $needTeamsModuleInstall = $true
+    }
+    Else{
+        Write-LogEntry -LogName:$Log -LogEntryText "MicrosoftTeams Module" -ForegroundColor Green
+    }
+
+    If(!(get-module -listavailable microsoft.online.sharepoint.powershell)){
+        Write-LogEntry -LogName:$Log -LogEntryText "SharePoint Online Module: Missing" -ForegroundColor Yellow
+    }
+    Else{
+        Write-LogEntry -LogName:$Log -LogEntryText "SharePoint Online Module" -ForegroundColor Green
+    }
+
+    $CheckForSignInAssistant = Test-Path "HKLM:\SOFTWARE\Microsoft\MSOIdentityCRL"
+    If ($CheckForSignInAssistant -eq $false) {
+        Write-LogEntry -LogName:$Log -LogEntryText "Microsoft Online Services Sign-in Assistant: Missing" -ForegroundColor Yellow
+        $needMSOAssistant = $true
+    }
+    else{
+        Write-LogEntry -LogName:$Log -LogEntryText "Microsoft Online Services Sign-in Assistant" -ForegroundColor Green
+    }
+
+    If(!(get-module -listavailable SkypeOnlineConnector)){
+        Write-LogEntry -LogName:$Log -LogEntryText "Skype for Business Online Module: Missing" -ForegroundColor Yellow
+        $needSkypeModule = $true
+    }
+    Else{
+        Write-LogEntry -LogName:$Log -LogEntryText "Skype for Business Online Module" -ForegroundColor Green
+    }
+
+    #Check for EXO/SCC Click Once Application required for MFA
+    If($acctHasMFA -eq "Y" -or $acctHasMFA -eq "y" ){
+        if ((Test-ClickOnce -ApplicationName "Microsoft Exchange Online Powershell Module" ) -eq $false)  {
+            Write-LogEntry -LogName:$Log -LogEntryText "Exchange Online MFA Module: Missing" -ForegroundColor Yellow
+            $needEXOMFAModule = $true
+        }
+        Else{
+            Write-LogEntry -LogName:$Log -LogEntryText "Exchange Online MFA Module" -ForegroundColor Green
+        }
+        
+    }
+
+    ""
+    ""
+
+    If($needEXOMFAModule -eq $true){
+        Write-LogEntry -LogName:$Log -LogEntryText "Please install the EXO/SCC Click Once App and re-run pre-flight check: https://cmdletpswmodule.blob.core.windows.net/exopsmodule/Microsoft.Online.CSE.PSModule.Client.application" -ForegroundColor Yellow
+    }
+    ElseIf($acctHasMFA -eq "Y" -or $acctHasMFA -eq "y" ){
+        $script = Load-ExchangeMFAModule 
+    }
 
     If($needAADPModuleInstall -eq $true){
-        $check = Read-Host "Didn't find the required AzureADPreview module version installed - https://www.powershellgallery.com/packages/AzureADPreview/. This is required to proceed. Install? (Y/N)"
+        $check = Read-Host "Would you like to install the required AzureADPreview module? (Y/N)"
         If($check -eq "Y" -or $check -eq "y"){
             try{
                 Write-LogEntry -LogName:$Log -LogEntryText "Installing latest version of AzureADPreview Module..." -ForegroundColor White
@@ -68,59 +154,117 @@ Function Check-Modules{
                 Write-LogEntry -LogName:$Log -LogEntryText "Successfully installed AzureADPreview Module." -ForegroundColor Green
             }
             catch{
-                Write-LogEntry -LogName:$Log -LogEntryText "Unable to install the AzureADPreview Module. Please install from here: https://www.powershellgallery.com/packages/AzureADPreview/" -ForegroundColor Red
+                Write-LogEntry -LogName:$Log -LogEntryText "Unable to install the AzureADPreview Module. Please install manually from here: https://www.powershellgallery.com/packages/AzureADPreview/" -ForegroundColor Yellow
                 Write-LogEntry -LogName:$Log -LogEntryText "$_" -ForegroundColor Red
-                exit        
             }
         }
         Else{
-             Write-LogEntry -LogName:$Log -LogEntryText "Please install AzureADPreview to move forward: https://www.powershellgallery.com/packages/AzureADPreview/" -ForegroundColor White
-             exit
+             Write-LogEntry -LogName:$Log -LogEntryText "Please install AzureADPreview to move forward: https://www.powershellgallery.com/packages/AzureADPreview/" -ForegroundColor Yellow
         }
     }
-    #If AzureAD module (Not AzureADPreview) is also available, then the AzureADPreview module is not loaded
-    $checkAzureADModule = get-module -name "AzureAD"
-    If($checkforAzureADModule -ne $null){
-        Remove-Module -Name "AzureAD"
+    Else{
+        Import-module -Name AzureADPreview
     }
-    Import-module -Name AzureADPreview
 
-    If(!(get-module -listavailable MicrosoftTeams)){
-        $check = Read-Host "Didn't find MicrosoftTeams module installed - https://www.powershellgallery.com/packages/MicrosoftTeams/. This is required to proceed.` Install? (Y/N)"
+    If($needTeamsModuleInstall -eq $true){
+        $check = Read-Host "Would you like to install the Microsoft Teams module? (Y/N)"
         If($check -eq "Y" -or $check -eq "y"){
             try{
                 Install-Module MicrosoftTeams
                 Write-LogEntry -LogName:$Log -LogEntryText "Successfully installed Microsoft Teams Module." -ForegroundColor Green        
             }
             catch{
-                Write-LogEntry -LogName:$Log -LogEntryText "Unable to install the Microsoft Teams Module. Please install from here: https://www.powershellgallery.com/packages/MicrosoftTeams/" -ForegroundColor Red
+                Write-LogEntry -LogName:$Log -LogEntryText "Unable to install the Microsoft Teams Module. Please install from here: https://www.powershellgallery.com/packages/MicrosoftTeams/" -ForegroundColor Yellow
                 Write-LogEntry -LogName:$Log -LogEntryText "$_" -ForegroundColor Red
-                exit        
             }     
         }
         Else{
-             Write-LogEntry -LogName:$Log -LogEntryText "Please install AzureADPreview to move forward: https://www.powershellgallery.com/packages/MicrosoftTeams/" -ForegroundColor White
-             exit
+             Write-LogEntry -LogName:$Log -LogEntryText "Please install the Microsoft Teams module to move forward: https://www.powershellgallery.com/packages/MicrosoftTeams/" -ForegroundColor Yellow
         }
     }
-    Import-module -Name MicrosoftTeams
-
-    If(!(get-module -listavailable microsoft.online.sharepoint.powershell)){
-        Write-LogEntry -LogName:$Log -LogEntryText "SPO management shell not found. If you recently installed it, make sure to close and re-open your powershell window. Please install and re-run script." -ForegroundColor Red
-        Write-LogEntry -LogName:$Log -LogEntryText "Install Link: https://www.microsoft.com/en-us/download/details.aspx?id=35588" -ForegroundColor Red
-        exit
+    Else{
+        Import-module -Name MicrosoftTeams
     }
-    Import-Module "C:\Program Files\SharePoint Online Management Shell\Microsoft.Online.SharePoint.PowerShell\Microsoft.Online.SharePoint.PowerShell.dll" -DisableNameChecking
+    
+    If($needSPOModule -eq $true){
+        Write-LogEntry -LogName:$Log -LogEntryText "SharePoint Online module missing - https://www.microsoft.com/en-us/download/details.aspx?id=35588. Please install and re-run." -ForegroundColor Yellow
+    }
+    Else{
+        Import-Module "C:\Program Files\SharePoint Online Management Shell\Microsoft.Online.SharePoint.PowerShell\Microsoft.Online.SharePoint.PowerShell.dll" -DisableNameChecking
+    }
 
-    $CheckForSignInAssistant = Test-Path "HKLM:\SOFTWARE\Microsoft\MSOIdentityCRL"
-    If ($CheckForSignInAssistant -eq $false) {
-        Write-LogEntry -LogName:$Log -LogEntryText "Microsoft Online Services Sign-in Assistant not found. If you recently installed it, make sure to close and re-open your powershell window. Please install and re-run script." -ForegroundColor Red
-        Write-LogEntry -LogName:$Log -LogEntryText "Install Link: https://go.microsoft.com/fwlink/p/?LinkId=286152" -ForegroundColor Red
-        exit
+    If($needMSOAssistant -eq $true){
+        Write-LogEntry -LogName:$Log -LogEntryText "Microsoft Online Services Sign-in Assistant missing - https://go.microsoft.com/fwlink/p/?LinkId=286152. Please install and re-run." -ForegroundColor Yellow
+    }
+    
+    If($needSkypeModule -eq $true){
+        Write-LogEntry -LogName:$Log -LogEntryText "Skype for Business online module missing - https://www.microsoft.com/en-us/download/details.aspx?id=39366. Please install and re-run." -ForegroundColor Yellow
+    }
+    else{
+        Import-module -Name SkypeOnlineConnector
     }
 
     Write-LogEntry -LogName:$Log -LogEntryText "Pre-Flight Done" -ForegroundColor Green
 }
+
+#Check for EXO & SCC click once application = Get-ClickOnce and Test-ClickOnce
+#https://www.powershellgallery.com/packages/Load-ExchangeMFA/1.1/Content/Load-ExchangeMFA.ps1
+function Get-ClickOnce {
+    [CmdletBinding()]  
+    Param(
+        $ApplicationName = "Microsoft Exchange Online Powershell Module"
+    )
+        $InstalledApplicationNotMSI = Get-ChildItem HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall | foreach-object {Get-ItemProperty $_.PsPath}
+        return $InstalledApplicationNotMSI | ? { $_.displayname -match $ApplicationName } | Select-Object -First 1
+    }
+    
+    
+Function Test-ClickOnce {
+[CmdletBinding()] 
+Param(
+    $ApplicationName = "Microsoft Exchange Online Powershell Module"
+)
+    return ( (Get-ClickOnce -ApplicationName $ApplicationName) -ne $null) 
+}
+
+#EXO and SCC MFA Module
+Function Load-ExchangeMFAModule { 
+    [CmdletBinding()] 
+    Param ()
+        $Modules = @(Get-ChildItem -Path "$($env:LOCALAPPDATA)\Apps\2.0" -Filter "Microsoft.Exchange.Management.ExoPowershellModule.manifest" -Recurse )
+        if ($Modules.Count -ne 1 ) {
+            throw "No or Multiple Modules found : Count = $($Modules.Count )"  
+        }  else {
+            $ModuleName =  Join-path $Modules[0].Directory.FullName "Microsoft.Exchange.Management.ExoPowershellModule.dll"
+            Write-Verbose "Start Importing MFA Module"
+            Import-Module -FullyQualifiedName $ModuleName  -Force 
+    
+            $ScriptName =  Join-path $Modules[0].Directory.FullName "CreateExoPSSession.ps1"
+            if (Test-Path $ScriptName) {
+                return $ScriptName
+    <# 
+                # Load the script to add the additional commandlets (Connect-EXOPSSession) 
+                # DotSourcing does not work from inside a function (. $ScriptName) 
+                #Therefore load the script as a dynamic module instead 
+     
+                $content = Get-Content -Path $ScriptName -Raw -ErrorAction Stop 
+                #BugBug >> $PSScriptRoot is Blank :-( 
+    <# 
+                $PipeLine = $Host.Runspace.CreatePipeline() 
+                $PipeLine.Commands.AddScript(". $scriptName") 
+                $r = $PipeLine.Invoke() 
+    #Err : Pipelines cannot be run concurrently. 
+     
+                $scriptBlock = [scriptblock]::Create($content) 
+                New-Module -ScriptBlock $scriptBlock -Name "Microsoft.Exchange.Management.CreateExoPSSession.ps1" -ReturnResult -ErrorAction SilentlyContinue 
+    #>
+    
+            } else {
+                throw "Script not found"
+                return $null
+            }
+        }
+    }
 
 #Logging Function
 Function Write-LogEntry {
@@ -140,13 +284,15 @@ Function Write-LogEntry {
 }
 
 #Function to connect to O365
-Function Logon-O365 {
-    #https://docs.microsoft.com/en-us/office365/enterprise/powershell/connect-to-all-office-365-services-in-a-single-windows-powershell-window
-    ""
-    $domainHost = Read-Host "Enter tenant name, such as contoso for contoso.onmicrosoft.com" 
-    $spoAdminUrl = "https://$domainHost-admin.sharepoint.com"
-    $global:credential = Get-Credential
-    
+Function Logon-O365MFA {
+    #You can't use the Exchange Online Remote PowerShell Module to connect to Exchange Online PowerShell and Security & Compliance Center PowerShell in the same session (window). You need to use separate sessions of the Exchange Online Remote PowerShell Module. 
+    #https://docs.microsoft.com/en-us/powershell/exchange/office-365-scc/connect-to-scc-powershell/mfa-connect-to-scc-powershell?view=exchange-ps
+
+    Write-LogEntry -LogName:$Log -LogEntryText "For MFA, we need to prompt for credentials for each service. Multiple prompts are expected." -ForegroundColor Yellow
+    start-sleep 2
+    $gotError = $false
+
+    #SPO
     try{$testSPO = get-spotenant -erroraction silentlycontinue}
     catch{}
     If($testSPO -ne $null){
@@ -155,15 +301,18 @@ Function Logon-O365 {
     Else{
         try{
             Import-Module Microsoft.Online.SharePoint.PowerShell -DisableNameChecking
-            Connect-SPOService -Url $spoAdminUrl -credential $credential
+            $domainHost = Read-Host "Enter tenant name, such as contoso for contoso.onmicrosoft.com" 
+            $spoAdminUrl = "https://$domainHost-admin.sharepoint.com"
+            Connect-SPOService -Url $spoAdminUrl 
             Write-LogEntry -LogName:$Log -LogEntryText "Connected to SharePoint Online" -ForegroundColor Green
         }
         catch{
-            Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to SharePoint Online. Re-running the script should help." -ForegroundColor Yellow 
+            Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to SharePoint Online: $_" -ForegroundColor Red
+            $gotError = $true 
         }
     }
 
-    start-sleep 2
+    #TEAMS
     try{$testTeams = Get-Team -erroraction silentlycontinue}
     catch{}
     If($testTeams -ne $null){
@@ -172,48 +321,56 @@ Function Logon-O365 {
     Else{
         try{
             Import-Module MicrosoftTeams
-            Connect-MicrosoftTeams -credential $credential | out-null
+            Connect-MicrosoftTeams | out-null
             Write-LogEntry -LogName:$Log -LogEntryText "Connected to Microsoft Teams" -ForegroundColor Green
         }
         catch{
-            Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Microsoft Teams. Re-running the script should help." -ForegroundColor Yellow 
+            Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Microsoft Teams: $_" -ForegroundColor Red
+            $gotError = $true  
         }
     }
-           
-    #need to wait a bit before connecting to EXO
-    start-sleep 2
-    $session = Get-PSSession | where {($_.ComputerName -eq "outlook.office365.com") -and ($_.State -eq "Opened")}
-    If ($session -ne $null) {
+
+    #EXO
+    try{$testEXO = Get-OrganizationConfig | ?{$_.identity -like "*.onmicrosoft.com"}}
+    catch{}
+    If($testEXO -ne $null){
         Write-LogEntry -LogName:$Log -LogEntryText "Connected to Exchange Online" -ForegroundColor Green
     }
     Else{
         try{
-            $exchangeSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri "https://outlook.office365.com/powershell-liveid/" -Credential $credential -Authentication Basic -AllowRedirection -WarningAction SilentlyContinue 
-            #Import-PSSession -session $exchangeSession -DisableNameChecking -AllowClobber | out-null
-            Import-Module (Import-PSSession $exchangeSession -DisableNameChecking -AllowClobber) -Global -DisableNameChecking | out-null
+            Connect-EXOPSSession 
             Write-LogEntry -LogName:$Log -LogEntryText "Connected to Exchange Online" -ForegroundColor Green
         }
         catch{
-            Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Exchange Online. Re-running the script should help." -ForegroundColor Yellow
+            Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Exchange Online: $_" -ForegroundColor Red
+            $gotError = $true
         }
-    }    
-    #need to wait a bit before connecting to EXO
-    start-sleep 2
-    If (Get-PSSession | where {($_.ComputerName -eq "ps.compliance.protection.outlook.com") -and ($_.State -eq "Opened")}) {
-        Write-LogEntry -LogName:$Log -LogEntryText "Connected to Compliance Center" -ForegroundColor Green    
+    }
+    
+    #Security and Compliance Center
+    #For MFA - it's not possible to connect to EXO Powershell and Security & Compliance center in the same session
+    #https://docs.microsoft.com/en-us/powershell/exchange/office-365-scc/connect-to-scc-powershell/mfa-connect-to-scc-powershell?view=exchange-ps
+    #https://techcommunity.microsoft.com/t5/Windows-PowerShell/Can-I-Connect-to-O365-Security-amp-Compliance-center-via/td-p/68898
+    #Potential workaround: https://gallery.technet.microsoft.com/Office-365-Connection-47e03052
+    <#
+    try{$testSCC = Get-DlpSensitiveInformationType}
+    catch{}
+    If($testSCC -ne $null){
+        Write-LogEntry -LogName:$Log -LogEntryText "Connected to Security and Compliance Center" -ForegroundColor Green
     }
     Else{
         try{
-            $ccSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://ps.compliance.protection.outlook.com/powershell-liveid/ -Credential $credential -Authentication Basic -AllowRedirection -WarningAction SilentlyContinue
-            #Import-PSSession -session $ccSession -Prefix cc -DisableNameChecking -AllowClobber | out-null
-            Import-Module (Import-PSSession $ccSession -DisableNameChecking -AllowClobber) -Global -DisableNameChecking | out-null
-            Write-LogEntry -LogName:$Log -LogEntryText "Connected to Compliance Center" -ForegroundColor Green
+            Connect-IPPSSession
+            Write-LogEntry -LogName:$Log -LogEntryText "Connected to Security and Compliance Center" -ForegroundColor Green
         }
         catch{
-            Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Compliance Center. Re-running the script should help." -ForegroundColor Yellow
+            Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Security and Compliance Center: $_" -ForegroundColor Red
+            $gotError = $true
         }
     }
-    start-sleep 2
+    #>
+
+    #Azure AD 
     try{$testAAD = Get-AzureADCurrentSessionInfo -erroraction silentlycontinue}
     catch{}
     If($testAAD -ne $null){
@@ -222,16 +379,183 @@ Function Logon-O365 {
     Else{
         try{
             #Need AzureADPreview 2.0.0.137 for Get-AzureADMSGroupLifecyclePolicy 
-            Import-Module AzureADPreview
-            start-sleep 2
-            Connect-AzureAD -credential $credential | out-null #https://github.com/itnetxbe/Feedback/issues/15 - login issues sporadically
+            #If AzureAD module (Not AzureADPreview) is also available, then the AzureADPreview module is not loaded
+            $checkAzureADModule = get-module -name "AzureAD"
+            If($checkforAzureADModule -ne $null){
+                Remove-Module -Name "AzureAD"
+            }
+            Import-module -Name AzureADPreview
+            Connect-AzureAD  | out-null #https://github.com/itnetxbe/Feedback/issues/15 - login issues sporadically
             Write-LogEntry -LogName:$Log -LogEntryText "Connected to Azure AD" -ForegroundColor Green
         }
         catch{
-            Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Azure AD. Re-running the script should help." -ForegroundColor Yellow
+            Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Azure AD: $_" -ForegroundColor Red
+            $gotError = $true
         }
     }
+
+    #SFBO
+    try{$CSTenant = (Get-CsTenant).DisplayName}
+    catch{}
+    If ($CSTenant -ne $null){    
+        Write-LogEntry -LogName:$Log -LogEntryText "Connected to Skype for Business Online" -ForegroundColor Green
+    }
+    Else {
+        try{
+            Import-Module SkypeOnlineConnector
+            $sfbSession = New-CsOnlineSession 
+            Import-PSSession $sfbSession    
+        }
+        catch{
+            Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Skype for Business Online: $_" -ForegroundColor Red
+            $gotError = $true
+        }
+    }
+    
+    If($gotError -eq $true){
+        Write-LogEntry -LogName:$Log -LogEntryText "There was an error connecting to one of the services. Re-run Step 0 and try again." -ForegroundColor Yellow
+    }
+
 }
+
+Function Logon-O365{
+    $gotError = $false
+
+    #SPO
+    try{$testSPO = get-spotenant -erroraction silentlycontinue}
+    catch{}
+    If($testSPO -ne $null){
+        Write-LogEntry -LogName:$Log -LogEntryText "Connected to SharePoint Online" -ForegroundColor Green
+    }
+    Else{
+        try{
+            Import-Module Microsoft.Online.SharePoint.PowerShell -DisableNameChecking
+            $domainHost = Read-Host "Enter tenant name, such as contoso for contoso.onmicrosoft.com" 
+            $spoAdminUrl = "https://$domainHost-admin.sharepoint.com"
+            Connect-SPOService -Url $spoAdminUrl #not passing credentials due to known issue with connect-sposervice
+            Write-LogEntry -LogName:$Log -LogEntryText "Connected to SharePoint Online" -ForegroundColor Green
+        }
+        catch{
+            Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to SharePoint Online: $_" -ForegroundColor Red
+            $gotError = $true 
+        }
+    }
+
+    #EXO
+    $session = Get-PSSession | where {($_.ComputerName -eq "outlook.office365.com") -and ($_.State -eq "Opened")}
+    If ($session -ne $null) {
+        Write-LogEntry -LogName:$Log -LogEntryText "Connected to Exchange Online" -ForegroundColor Green
+    }
+    Else{
+        try{
+            If ($Credential -eq $null){
+                $Credential = Get-Credential
+            }
+            $exchangeSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri "https://outlook.office365.com/powershell-liveid/" -Credential $credential -Authentication Basic -AllowRedirection -WarningAction SilentlyContinue 
+            #Import-PSSession -session $exchangeSession -DisableNameChecking -AllowClobber | out-null
+            Import-Module (Import-PSSession $exchangeSession -DisableNameChecking -AllowClobber) -Global -DisableNameChecking | out-null
+            Write-LogEntry -LogName:$Log -LogEntryText "Connected to Exchange Online" -ForegroundColor Green
+        }
+        catch{
+            Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Exchange Online: $_" -ForegroundColor Red
+            $gotError = $true 
+        }
+    }    
+
+    #TEAMS
+    try{$testTeams = Get-Team -erroraction silentlycontinue}
+    catch{}
+    If($testTeams -ne $null){
+        Write-LogEntry -LogName:$Log -LogEntryText "Connected to Microsoft Teams" -ForegroundColor Green
+    }
+    Else{
+        try{
+            Import-Module MicrosoftTeams
+            If ($Credential -eq $null){
+                $Credential = Get-Credential
+            }
+            Connect-MicrosoftTeams -Credential $Credential | out-null
+            Write-LogEntry -LogName:$Log -LogEntryText "Connected to Microsoft Teams" -ForegroundColor Green
+        }
+        catch{
+            Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Microsoft Teams: $_" -ForegroundColor Red
+            $gotError = $true 
+        }
+    }
+
+    #SFBO
+    try{$CSTenant = (Get-CsTenant).DisplayName}
+    catch{}
+    If ($CSTenant -ne $null){    
+        Write-LogEntry -LogName:$Log -LogEntryText "Connected to Skype for Business Online" -ForegroundColor Green
+    }
+    Else {
+        try{
+            If ($Credential -eq $null){
+                $Credential = Get-Credential
+            }
+            Import-Module SkypeOnlineConnector
+            $sfbSession = New-CsOnlineSession -Credential $Credential
+            Import-PSSession $sfbSession    
+        }
+        catch{
+            Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Skype for Business Online: $_" -ForegroundColor Red
+            $gotError = $true
+        }
+    }
+
+    #Compliance Center
+    #Getting Access Denied errors. Commenting out for now
+    <#
+    If (Get-PSSession | where {($_.ComputerName -eq "ps.compliance.protection.outlook.com") -and ($_.State -eq "Opened")}) {
+        Write-LogEntry -LogName:$Log -LogEntryText "Connected to Compliance Center" -ForegroundColor Green    
+    }
+    Else{
+        try{
+            If ($Credential -eq $null){
+                $Credential = Get-Credential
+            }
+            $ccSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://ps.compliance.protection.outlook.com/powershell-liveid/ -Credential $Credential -Authentication Basic -AllowRedirection -WarningAction SilentlyContinue
+            Import-PSSession -session $ccSession -Prefix cc -DisableNameChecking -AllowClobber | out-null
+            #Import-Module (Import-PSSession $ccSession -DisableNameChecking -AllowClobber) -Global -DisableNameChecking | out-null
+            Write-LogEntry -LogName:$Log -LogEntryText "Connected to Compliance Center" -ForegroundColor Green
+        }
+        catch{
+            Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Compliance Center: $_" -ForegroundColor Red
+            $gotError = $true 
+        }
+    }
+    #>
+
+    #Azure AD 
+    try{$testAAD = Get-AzureADCurrentSessionInfo -erroraction silentlycontinue}
+    catch{}
+    If($testAAD -ne $null){
+        Write-LogEntry -LogName:$Log -LogEntryText "Connected to Azure AD" -ForegroundColor Green
+    }
+    Else{
+        try{
+            #Need AzureADPreview 2.0.0.137 for Get-AzureADMSGroupLifecyclePolicy 
+            #If AzureAD module (Not AzureADPreview) is also available, then the AzureADPreview module is not loaded
+            $checkAzureADModule = get-module -name "AzureAD"
+            If($checkforAzureADModule -ne $null){
+                Remove-Module -Name "AzureAD"
+            }
+            Import-module -Name AzureADPreview
+            Connect-AzureAD | out-null #prompt for credential due to issue: AADSTS90014
+            Write-LogEntry -LogName:$Log -LogEntryText "Connected to Azure AD" -ForegroundColor Green
+        }
+        catch{
+            Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Azure AD: $_" -ForegroundColor Red
+            $gotError = $true
+        }
+    }
+    ""
+    If($gotError -eq $true){
+        Write-LogEntry -LogName:$Log -LogEntryText "There was an error connecting to one of the services. Re-run Step 1 and try again." -ForegroundColor Yellow
+    }
+}
+
 
 # Gets AllowBlockedList from SPO
 function GetSPOPolicy {
@@ -333,6 +657,7 @@ function GetExistingBlockedDomainList(){
 
 #Get list of Teams
 Function Get-Teams{
+    #Using David Whitney (dawhitne@microsoft.com) method of identifying Teams based on http status code
     param (
         [switch]$ExportToCSV
     )
@@ -367,7 +692,9 @@ Function Get-Teams{
         try {
             $teamschannels = Get-TeamChannel -GroupId $o365group.ExternalDirectoryObjectId
             $GroupTeam = [pscustomobject]@{GroupId = $o365group.ExternalDirectoryObjectId; 
-                GroupName = $o365group.DisplayName; 
+                GroupName = $o365group.DisplayName;
+                TeamsEnabled = $true;
+                ManagedBy = $o365group.ManagedBy 
                 WhenCreated = $o365group.WhenCreated;
                 PrimarySMTPAddress = $o365group.PrimarySMTPAddress;
                 GroupGuestSetting = $o365group.AllowAddGuests;
@@ -390,16 +717,37 @@ Function Get-Teams{
             $ErrorCode = $Exception.ErrorCode
             switch ($ErrorCode) {
                 "404" {
+                    $GroupTeam = [pscustomobject]@{GroupId = $o365group.ExternalDirectoryObjectId; 
+                        GroupName = $o365group.DisplayName; 
+                        TeamsEnabled = $false;
+                        ManagedBy = $o365group.ManagedBy 
+                        WhenCreated = $o365group.WhenCreated;
+                        PrimarySMTPAddress = $o365group.PrimarySMTPAddress;
+                        GroupGuestSetting = $o365group.AllowAddGuests;
+                        GroupAccessType = $o365group.AccessType;
+                        GroupClassification = $o365group.Classification
+                        GroupMemberCount = $o365group.GroupMemberCount;
+                        GroupExtMemberCount = $o365group.GroupExternalMemberCount;  
+                        SPOSiteUrl =  $o365group.SharePointSiteUrl;
+                        SPOStorageUsed = $spoStorageQuota;
+                        SPOtorageQuota = $spoStorageUsed;
+                        SPOSharingSetting = $spoSharingSetting;
+                    }
+                    $ListOfGroupsTeams.add($GroupTeam) | out-null
                     break;
                 }
                 "403" {
                     $GroupTeam = [pscustomobject]@{GroupId = $o365group.ExternalDirectoryObjectId; 
                         GroupName = $o365group.DisplayName; 
+                        TeamsEnabled = $true;
+                        ManagedBy = $o365group.ManagedBy 
                         WhenCreated = $o365group.WhenCreated;
                         PrimarySMTPAddress = $o365group.PrimarySMTPAddress;
                         GroupGuestSetting = $o365group.AllowAddGuests;
                         GroupAccessType = $o365group.AccessType;
-                        GroupClassification = $o365group.Classification; 
+                        GroupClassification = $o365group.Classification
+                        GroupMemberCount = $o365group.GroupMemberCount;
+                        GroupExtMemberCount = $o365group.GroupExternalMemberCount;  
                         SPOSiteUrl =  $o365group.SharePointSiteUrl;
                         SPOStorageUsed = $spoStorageQuota;
                         SPOtorageQuota = $spoStorageUsed;
@@ -614,7 +962,6 @@ Function Get-InactiveTeams(){
     $WarningDate = (Get-Date).AddDays(-90) #90 days
     $Today = (Get-Date)
     $Date = $Today.ToShortDateString()
-    $SPOWarningStorageUsage = "10" #MB
 
     Write-LogEntry -LogName:$Log -LogEntryText "Getting Inactive Teams Report..." -ForegroundColor Yellow
 
@@ -652,10 +999,6 @@ Function Get-InactiveTeams(){
             #no activity in the last 90 days
             $SPOStatus = "Inactive"
         }
-        If($SPOStorageUsageCurrent -le $SPOWarningStorageUsage){
-            #less than 10 MB of usage
-            $SPOStatus = "Inactive"
-        }
 
         $record = [pscustomobject]@{TeamID = $team.GroupID;
             TeamName = $team.GroupName;
@@ -673,6 +1016,79 @@ Function Get-InactiveTeams(){
 
     $inactiveTeams | Export-CSV -Path $InactiveTeamsCSV -NoTypeInformation
 
+}
+
+#Get Teams That User X Owns
+Function Get-TeamsByUser(){
+    $user = Read-host "Enter the UPN of the user, e.g. userA@contoso.com"
+    $hashOfTeamsUserOwns = @{}
+    $listOfTeamsByUser = New-Object -TypeName System.Collections.ArrayList
+
+    if (-not (Get-PSSession | where {($_.ComputerName -eq "outlook.office365.com") -and ($_.State -eq "Opened")})) {
+        throw "You must connect to Exchange Online Remote PowerShell to gather Groups information"
+    }
+
+    Write-LogEntry -LogName:$Log -LogEntryText "Searching for groups by user..." -ForegroundColor Yellow
+
+    $userobject = Get-User -Identity $User
+    $o365groups = Get-UnifiedGroup -Filter ("Members -eq '{0}'" -f $userobject.DistinguishedName)
+
+    Write-LogEntry -LogName:$Log -LogEntryText "Found $($o365groups.Count) groups for user $($User)" -ForegroundColor Yellow
+    
+    $count = $o365groups.count
+    $i=0
+    foreach($o365group in $o365groups){
+        Write-Progress -Activity "Getting Group/Team Owners" -Status "Processed $i of $count " -PercentComplete ($i/$count*100);
+        $owners = $o365group | Get-UnifiedGroupLinks -linktype "Owners"
+        If($owners.PrimarySMTPAddress -contains $user){
+            $hashOfTeamsUserOwns.add($o365group.ExternalDirectoryObjectId,$true) | Out-Null
+        }
+        Else{
+            $hashOfTeamsUserOwns.add($o365group.ExternalDirectoryObjectId,$false) | Out-Null
+        }
+        $i++
+    }
+
+    $count = $o365groups.count
+    $i=0
+    foreach ($o365group in $o365groups) {
+        Write-Progress -Activity "Building collection of Teams/Groups by User" -Status "Processed $i of $count " -PercentComplete ($i/$count*100);
+        try {
+            $teamschannels = Get-TeamChannel -GroupId $o365group.ExternalDirectoryObjectId
+            $groupID = $o365group.ExternalDirectoryObjectId
+            $addGroup = [pscustomobject]@{User = $user; GroupId = $groupID; GroupName = $o365group.DisplayName; TeamsEnabled = $true; IsOwner = $hashOfTeamsUserOwns[$groupID]} 
+            $listOfTeamsByUser.add($addGroup) | Out-Null
+        } 
+        catch {
+            $Exception = $_.Exception
+            if ($Exception.Message -like "*Connect-MicrosoftTeams*") {
+                throw $Exception
+            }
+    
+            $ErrorCode = $Exception.ErrorCode
+            switch ($ErrorCode) {
+                "404" {
+                    $groupID = $o365group.ExternalDirectoryObjectId
+                    $addGroup = [pscustomobject]@{User = $user; GroupId = $groupID; GroupName = $o365group.DisplayName; TeamsEnabled = $false; IsOwner = $hashOfTeamsUserOwns[$groupID]} 
+                    $listOfTeamsByUser.add($addGroup) | Out-Null
+                    break;
+                }
+                "403" {
+                    $groupID = $o365group.ExternalDirectoryObjectId
+                    $addGroup = [pscustomobject]@{User = $user; GroupId = $groupID; GroupName = $o365group.DisplayName; TeamsEnabled = $false; IsOwner = $hashOfTeamsUserOwns[$groupID]} 
+                    $listOfTeamsByUser.add($addGroup) | Out-Null
+                    break;
+                }
+                default {
+                    Write-Error ("Unknown ErrorCode trying to 'Get-TeamChannel -GroupId {0}' :: {1}" -f $o365group, $ErrorCode)
+                    $Errorcatch
+                }
+            }
+        }
+        $i++
+    }
+
+    $listOfTeamsByUser | Export-CSV -Path $TeamsByUserCSV -NoTypeInformation
 }
 
 #Get Users That Can Create Teams
@@ -712,6 +1128,34 @@ Function Get-UsersCanCreateTeams(){
     }
 }
 
+Function Get-GroupsWithoutOwners(){
+    $listOfTeamsWithoutOwners = New-Object -TypeName System.Collections.ArrayList
+
+    Write-LogEntry -LogName:$Log -LogEntryText "Getting Teams without Owners Report..." -ForegroundColor Yellow
+
+    If(!$ListOfGroupsTeams){
+        Write-LogEntry -LogName:$Log -LogEntryText "List of Teams Not Found, Getting That Report First..." -ForegroundColor White
+        Get-Teams
+    }
+
+    $count = $ListOfGroupsTeams.count
+    $i=0
+    foreach($team in $ListOfGroupsTeams){
+        Write-Progress -Activity "Getting Teams without Owners Report..." -Status "Processed $i of $count " -PercentComplete ($i/$count*100);
+        If ($team.ManagedBy -Ne $Null){
+            $groupInfo = [pscustomobject]@{GroupID = $team.GroupID; GroupName = $team.GroupName;HasOwners="True";ManagedBy = $team.managedby}
+            $listOfTeamsWithoutOwners.add($groupInfo) | out-null
+        }
+        Else{
+            $groupInfo = [pscustomobject]@{GroupID = $team.GroupID; GroupName = $team.GroupName;HasOwners="False";ManagedBy = $team.managedby}
+            $listOfTeamsWithoutOwners.add($groupInfo) | out-null
+        }
+    }
+
+    $listOfTeamsWithoutOwners | Export-CSV -Path $groupsNoOwnersCSV -NoTypeInformation
+
+}
+
 #endregion Functions
 
 #region MAIN
@@ -729,11 +1173,10 @@ $TeamsMemberGuestCSV = "$($output)\ListOfMembers.csv"
 $InactiveTeamsCSV = "$($output)\ListOfInactiveTeams.csv"
 $UsersCanCreateCSV = "$($output)\ListOfUsersThatCanCreateTeams.csv"
 $teamsSettingsOut = "$($output)\ListOfTeamsSettings.txt"
+$TeamsByUserCSV = "$($output)\ListOfTeamsByUser.csv"
+$groupsNoOwnersCSV = "$($output)\ListOfTeamsWithoutOwners.csv"
 Write-LogEntry -LogName:$Log -LogEntryText "User: $user Computer: $computer" -foregroundcolor Yellow
 #endregion Variables
-
-#Preflight Check
-Check-Modules
 
 [string] $menu = @'
 
@@ -743,16 +1186,19 @@ Check-Modules
 	
     Please select an option from the list below:
 
-        0) Connect to AzureAD and Office 365
-        1) Get Teams
-        2) Get Teams Membership
-        3) Get Teams That Are Not Active 
-        4) Get Users That Are Allowed To Create Teams
-        5) Get Teams Tenant Settings
-        6) Get All Above Reports 
-        7) Exit Script
+        0) Check Script Pre-requisites
+        1) Connect to O365
+        2) Get Teams
+        3) Get Teams Membership
+        4) Get Teams That Are Not Active
+        5) Get Users That Are Allowed To Create Teams
+        6) Get Teams Tenant Settings
+        7) Get Groups/Teams Without Owner(s)
+        8) Get All Above Reports
+        9) Get Teams By User
+       10) Exit Script
 
-Select an option.. [0-7]?
+Select an option.. [0-10]?
 '@
 
 Do { 	
@@ -762,53 +1208,82 @@ Do {
 	switch ($opt)    {
     			
 	  	0 { # Logon to required services
-            Write-LogEntry -LogName:$Log -LogEntryText "Selected option 0" 
-            Logon-O365
+            Write-LogEntry -LogName:$Log -LogEntryText "Selected option 0" -ForegroundColor Yellow
+            Check-Modules
         }
 
-        1 { # Get Teams
-            Write-LogEntry -LogName:$Log -LogEntryText "Selected option 1" 
+        1 { # Logon to required services
+            Write-LogEntry -LogName:$Log -LogEntryText "Selected option 1" -ForegroundColor Yellow
+            $acctHasMFA = Read-Host "Is your account enabled for MFA? (Y/N)"
+            If($acctHasMFA -eq "Y" -or $acctHasMFA -eq "y"){
+                Logon-O365MFA
+            }
+            ElseIf($acctHasMFA -eq "N" -or $acctHasMFA -eq "n"){
+                Logon-O365
+            }
+            Else{
+                Write-LogEntry -LogName:$Log -LogEntryText "Please type 'Y' for Yes or 'N' for No" -ForegroundColor Yellow
+            }
+        }
+
+        2 { # Get Teams
+            Write-LogEntry -LogName:$Log -LogEntryText "Selected option 2" -ForegroundColor Yellow
             Get-Teams -ExportToCSV
             Write-LogEntry -LogName:$Log -LogEntryText "Report location: $($TeamsCSV) " -ForegroundColor Green
         }
 
-        2 { # Get Teams Members and Guests
-            Write-LogEntry -LogName:$Log -LogEntryText "Selected option 2"
+        3 { # Get Teams Members and Guests
+            Write-LogEntry -LogName:$Log -LogEntryText "Selected option 3" -ForegroundColor Yellow
             Get-TeamsMembersGuests
             Write-LogEntry -LogName:$Log -LogEntryText "Report location: $($TeamsMemberGuestCSV)" -ForegroundColor Green
         }
 
-        3 { # Get Teams that are not active 
-            Write-LogEntry -LogName:$Log -LogEntryText "Selected option 3"
+        4 { # Get Teams that are not active 
+            Write-LogEntry -LogName:$Log -LogEntryText "Selected option 4" -ForegroundColor Yellow
             Get-InactiveTeams
             Write-LogEntry -LogName:$Log -LogEntryText "Report location: $($InactiveTeamsCSV)" -ForegroundColor Green
         }
 
-        4 { # Get Users That Are Allowed to Create Teams 
-            Write-LogEntry -LogName:$Log -LogEntryText "Selected option 4"
+        5 { # Get Users That Are Allowed to Create Teams 
+            Write-LogEntry -LogName:$Log -LogEntryText "Selected option 5" -ForegroundColor Yellow
             Get-UsersCanCreateTeams
             Write-LogEntry -LogName:$Log -LogEntryText "Report location: $($UsersCanCreateCSV)" -ForegroundColor Green
         }
 
-        5 { # Get Teams Tenant Settings 
-            Write-LogEntry -LogName:$Log -LogEntryText "Selected option 5"
+        6 { # Get Teams Tenant Settings 
+            Write-LogEntry -LogName:$Log -LogEntryText "Selected option 6" -ForegroundColor Yellow
             Get-TeamsSettings
             Write-LogEntry -LogName:$Log -LogEntryText "Report location: $($teamsSettingsOut)" -ForegroundColor Green
         }
 
-        6 { # Get All Above Reports
-            Write-LogEntry -LogName:$Log -LogEntryText "Selected option 6"
+        7 { # Get List of Groups/Teams without Owner
+            Write-LogEntry -LogName:$Log -LogEntryText "Selected option 7" -ForegroundColor Yellow
+            Get-GroupsWithoutOwners
+            Write-LogEntry -LogName:$Log -LogEntryText "Report location: $($groupsNoOwnersCSV)" -ForegroundColor Green
+        }
+
+        8 { # Get All Reports Above
+            Write-LogEntry -LogName:$Log -LogEntryText "Selected option 8" -ForegroundColor Yellow
             Get-Teams -ExportToCSV
             Get-TeamsMembersGuests
             Get-InactiveTeams
             Get-UsersCanCreateTeams
+            Get-GroupsWithoutOwners
             Get-TeamsSettings
             Write-LogEntry -LogName:$Log -LogEntryText "Reports location: $($output)" -ForegroundColor Green
         }
 
-		7 { # Remove sessions and exit
-            Write-LogEntry -LogName:$Log -LogEntryText "Selected option 7"
+        9 { # Get Teams that a User (input) Owns
+            Write-LogEntry -LogName:$Log -LogEntryText "Selected option 9" -ForegroundColor Yellow
+            Get-TeamsByUser
+            Write-LogEntry -LogName:$Log -LogEntryText "Report location: $($TeamsByUserCSV)" -ForegroundColor Green
+        }
+
+		10 { # Remove sessions and exit
+            Write-LogEntry -LogName:$Log -LogEntryText "Selected option 10" -ForegroundColor Yellow
             try{Disconnect-AzureAD -erroraction silentlycontinue}
+            catch{}
+            try{Remove-PSSession $sfbSession -ErrorAction SilentlyContinue}
             catch{}
             try{Remove-PSSession $exchangeSession -erroraction silentlycontinue}
             catch{}
@@ -823,6 +1298,6 @@ Do {
 		
         default {Write-Host "You haven't selected any of the available options."}
 	}
-} while ($opt -ne 7)
+} while ($opt -ne 10)
 
 #endregion MAIN
