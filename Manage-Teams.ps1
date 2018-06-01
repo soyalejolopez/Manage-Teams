@@ -413,7 +413,7 @@ Function Logon-O365MFA {
     }
     
     If($gotError -eq $true){
-        Write-LogEntry -LogName:$Log -LogEntryText "There was an error connecting to one of the services. Re-run Step 0 and try again." -ForegroundColor Yellow
+        Write-LogEntry -LogName:$Log -LogEntryText "There was an error connecting to one of the services. Re-run Step 1 and try again." -ForegroundColor Yellow
     }
 
 }
