@@ -300,7 +300,7 @@ Function Logon-O365MFA {
     }
     Else{
         try{
-            Import-Module Microsoft.Online.SharePoint.PowerShell -DisableNameChecking
+            Import-Module "C:\Program Files\SharePoint Online Management Shell\Microsoft.Online.SharePoint.PowerShell\Microsoft.Online.SharePoint.PowerShell.dll" -DisableNameChecking
             $domainHost = Read-Host "Enter tenant name, such as contoso for contoso.onmicrosoft.com" 
             $spoAdminUrl = "https://$domainHost-admin.sharepoint.com"
             Connect-SPOService -Url $spoAdminUrl 
@@ -429,7 +429,7 @@ Function Logon-O365{
     }
     Else{
         try{
-            Import-Module Microsoft.Online.SharePoint.PowerShell -DisableNameChecking
+            Import-Module "C:\Program Files\SharePoint Online Management Shell\Microsoft.Online.SharePoint.PowerShell\Microsoft.Online.SharePoint.PowerShell.dll" -DisableNameChecking
             $domainHost = Read-Host "Enter tenant name, such as contoso for contoso.onmicrosoft.com" 
             $spoAdminUrl = "https://$domainHost-admin.sharepoint.com"
             Connect-SPOService -Url $spoAdminUrl #not passing credentials due to known issue with connect-sposervice
