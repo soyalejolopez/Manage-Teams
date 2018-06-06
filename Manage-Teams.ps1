@@ -73,21 +73,13 @@ Function Check-Modules{
     }
 
     $aadmodule = get-module -listavailable azureadpreview
-    If($aadmodule){
-        #Need AzureADPreview 2.0.0.137 for Get-AzureADMSGroupLifecyclePolicy
-        $reqAADPMinRevision = 137 
-        $checkaadpversion = (get-module -listavailable azureadpreview | select -expandproperty version).revision
-        If($reqAADPMinRevision -gt $checkaadpversion){
-            $needAADPModuleInstall = $true
-            Write-LogEntry -LogName:$Log -LogEntryText "AzureADPreview 2.0.0.137+: Missing" -ForegroundColor Yellow 
-        }
-        Else{
-            Write-LogEntry -LogName:$Log -LogEntryText "AzureADPreview 2.0.0.137+" -ForegroundColor Green 
-        }
+    If(!$aadmodule){
+        #Need at least AzureADPreview 2.0.0.137 for Get-AzureADMSGroupLifecyclePolicy
+        Write-LogEntry -LogName:$Log -LogEntryText "AzureADPreview Missing" -ForegroundColor Yellow 
+        $needAADPModuleInstall = $true
     }
     Else{
-        $needAADPModuleInstall = $true
-        Write-LogEntry -LogName:$Log -LogEntryText "AzureADPreview 2.0.0.137+: Missing" -ForegroundColor Yellow 
+        Write-LogEntry -LogName:$Log -LogEntryText "AzureADPreview" -ForegroundColor Green
     }
 
     If(!(get-module -listavailable MicrosoftTeams)){
@@ -315,7 +307,7 @@ Function Logon-O365MFA {
     #TEAMS
     try{$testTeams = Get-Team -erroraction silentlycontinue}
     catch{}
-    If($testTeams -ne $null){
+    if(!$testTeams){
         Write-LogEntry -LogName:$Log -LogEntryText "Connected to Microsoft Teams" -ForegroundColor Green
     }
     Else{
@@ -465,7 +457,7 @@ Function Logon-O365{
     #TEAMS
     try{$testTeams = Get-Team -erroraction silentlycontinue}
     catch{}
-    If($testTeams -ne $null){
+    if(!$testTeams){
         Write-LogEntry -LogName:$Log -LogEntryText "Connected to Microsoft Teams" -ForegroundColor Green
     }
     Else{
