@@ -13,9 +13,9 @@ THIS CODE IS PROVIDED AS IS WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESS OR IMPL
     2) Get Teams
         Properties: "GroupId","GroupName","TeamsEnabled","Provider","ManagedBy","WhenCreated","PrimarySMTPAddress","GroupGuestSetting","GroupAccessType","GroupClassification","GroupMemberCount","GroupExtMemberCount","SPOSiteUrl","SPOStorageUsed","SPOtorageQuota","SPOSharingSetting"
     3) Get Teams Membership
-        Properties: "TeamID","TeamName","Member","Name","RecipientType","Membership"
+        Properties: "GroupID","GroupName","TeamsEnabled","Member","Name","RecipientType","Membership"
     4) Get Teams That Are Not Active
-        Properties: "TeamID","TeamName","PrimarySMTPAddress","MailboxStatus","LastConversationDate","NumOfConversations","SPOStatus","LastContentModified","StorageUsageCurrent" 
+        Properties: "GroupID","Name","TeamsEnabled","PrimarySMTPAddress","MailboxStatus","LastConversationDate","NumOfConversations","SPOStatus","LastContentModified","StorageUsageCurrent"
     5) Get Users That Are Allowed To Create Teams
         Properties: "ObjectID","DisplayName","UserPrincipalName","UserType" 
     6) Get Teams Tenant Settings

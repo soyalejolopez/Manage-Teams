@@ -13,9 +13,9 @@ What this script does:
     2) Get Teams
         Properties: "GroupId","GroupName","TeamsEnabled","Provider","ManagedBy","WhenCreated","PrimarySMTPAddress","GroupGuestSetting","GroupAccessType","GroupClassification","GroupMemberCount","GroupExtMemberCount","SPOSiteUrl","SPOStorageUsed","SPOtorageQuota","SPOSharingSetting"
     3) Get Teams Membership
-        Properties: "TeamID","TeamName","Member","Name","RecipientType","Membership"
+        Properties: "GroupID","GroupName","TeamsEnabled","Member","Name","RecipientType","Membership"
     4) Get Teams That Are Not Active
-        Properties: "TeamID","TeamName","PrimarySMTPAddress","MailboxStatus","LastConversationDate","NumOfConversations","SPOStatus","LastContentModified","StorageUsageCurrent" 
+        Properties: "GroupID","Name","TeamsEnabled","PrimarySMTPAddress","MailboxStatus","LastConversationDate","NumOfConversations","SPOStatus","LastContentModified","StorageUsageCurrent"
     5) Get Users That Are Allowed To Create Teams
         Properties: "ObjectID","DisplayName","UserPrincipalName","UserType" 
     6) Get Teams Tenant Settings
@@ -889,8 +889,9 @@ Function Get-TeamsMembersGuests(){
         try{
             $owners = Get-UnifiedGroupLinks -Identity $team.GroupID -linktype Owners
             foreach($owner in $owners){
-                $record = [pscustomobject]@{TeamID = $team.GroupID;
-                        TeamName = $team.GroupName;
+                $record = [pscustomobject]@{GroupID = $team.GroupID;
+                        GroupName = $team.GroupName;
+                        TeamsEnabled = $team.TeamsEnabled;
                         Member = $owner.PrimarySMTPAddress;
                         Name = $owner.Name;
                         RecipientType = $owner.RecipientType;
@@ -900,20 +901,22 @@ Function Get-TeamsMembersGuests(){
             $members = Get-UnifiedGroupLinks -Identity $team.GroupID -linktype Members | where-object {($membership.Member -notcontains $_.PrimarySMTPAddress)}
             foreach($MemberOrGuest in $members){
                 If($MemberOrGuest.Name -like "*#EXT#*"){
-                    $record = [pscustomobject]@{TeamID = $team.GroupID;
-                        TeamName = $team.GroupName;
-                        Member = $MemberOrGuest.PrimarySMTPAddress;
-                        Name = $MemberOrGuest.Name;
-                        RecipientType = $MemberOrGuest.RecipientType;
+                    $record = [pscustomobject]@{GroupID = $team.GroupID;
+                        GroupName = $team.GroupName;
+                        TeamsEnabled = $team.TeamsEnabled;
+                        Member = $owner.PrimarySMTPAddress;
+                        Name = $owner.Name;
+                        RecipientType = $owner.RecipientType;
                         Membership = "Guest"}
                     $membership.add($record) | out-null
                 }
                 Else{
-                    $record = [pscustomobject]@{TeamID = $team.GroupID;
-                        TeamName = $team.GroupName;
-                        Member = $MemberOrGuest.PrimarySMTPAddress;
-                        Name = $MemberOrGuest.Name;
-                        RecipientType = $MemberOrGuest.RecipientType;
+                    $record = [pscustomobject]@{GroupID = $team.GroupID;
+                        GroupName = $team.GroupName;
+                        TeamsEnabled = $team.TeamsEnabled;
+                        Member = $owner.PrimarySMTPAddress;
+                        Name = $owner.Name;
+                        RecipientType = $owner.RecipientType;
                         Membership = "Member"}
                     $membership.add($record) | out-null
                 }
@@ -1101,8 +1104,9 @@ Function Get-InactiveTeams(){
             $SPOStatus = "Inactive"
         }
 
-        $record = [pscustomobject]@{TeamID = $team.GroupID;
-            TeamName = $team.GroupName;
+        $record = [pscustomobject]@{GroupID = $team.GroupID;
+            Name = $team.GroupName;
+            TeamsEnabled = $team.TeamsEnabled;
             PrimarySMTPAddress = $team.PrimarySMTPAddress;
             MailboxStatus = $MailboxStatus;
             LastConversationDate = $Data.NewestItemReceivedDate;
