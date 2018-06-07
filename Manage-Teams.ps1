@@ -11,7 +11,7 @@ What this script does:
     0) Check Script Pre-requisites
     1) Connect to O365
     2) Get Teams
-        Properties: "GroupId","GroupName","TeamsEnabled","ManagedBy","WhenCreated","PrimarySMTPAddress","GroupGuestSetting","GroupAccessType","GroupClassification","GroupMemberCount","GroupExtMemberCount","SPOSiteUrl","SPOStorageUsed","SPOtorageQuota","SPOSharingSetting"
+        Properties: "GroupId","GroupName","TeamsEnabled","Provider","ManagedBy","WhenCreated","PrimarySMTPAddress","GroupGuestSetting","GroupAccessType","GroupClassification","GroupMemberCount","GroupExtMemberCount","SPOSiteUrl","SPOStorageUsed","SPOtorageQuota","SPOSharingSetting"
     3) Get Teams Membership
         Properties: "TeamID","TeamName","Member","Name","RecipientType","Membership"
     4) Get Teams That Are Not Active
@@ -34,8 +34,10 @@ REQUIREMENTS:
     -SPO module - https://www.microsoft.com/en-us/download/details.aspx?id=35588 
     -SFBO module - https://www.microsoft.com/en-us/download/details.aspx?id=39366
     -EXO/SCC Click Once App for MFA - https://docs.microsoft.com/en-us/powershell/exchange/office-365-scc/connect-to-scc-powershell/mfa-connect-to-scc-powershell?view=exchange-ps
+    -PNP Module - https://docs.microsoft.com/en-us/powershell/sharepoint/sharepoint-pnp/sharepoint-pnp-cmdlets?view=sharepoint-ps
 
 VERSION:
+    06072018: Update Get-Teams Logic to use Microsoft Graph
     05302018: Added MFA Logon Capability, Teams by User, Teams without Owners
     02072018: v1
 
@@ -60,6 +62,7 @@ Function Check-Modules{
     $needMSOAssistant = $false
     $needSkypeModule = $false
     $needEXOMFAModule = $false
+    $needPNPModule = $false
     ""
     $acctHasMFA = Read-Host "Is your account enabled for MFA? (Y/N)"
     ""
@@ -92,6 +95,7 @@ Function Check-Modules{
 
     If(!(get-module -listavailable microsoft.online.sharepoint.powershell)){
         Write-LogEntry -LogName:$Log -LogEntryText "SharePoint Online Module: Missing" -ForegroundColor Yellow
+        $needSPOModule = $true
     }
     Else{
         Write-LogEntry -LogName:$Log -LogEntryText "SharePoint Online Module" -ForegroundColor Green
@@ -124,6 +128,15 @@ Function Check-Modules{
             Write-LogEntry -LogName:$Log -LogEntryText "Exchange Online MFA Module" -ForegroundColor Green
         }
         
+    }
+
+    #Check for PNP Module
+    If(!(get-module -listavailable sharepointpnppowershellonline)){
+        Write-LogEntry -LogName:$Log -LogEntryText "PNP Module: Missing" -ForegroundColor Yellow
+        $needPNPModule = $true
+    }
+    Else{
+        Write-LogEntry -LogName:$Log -LogEntryText "PNP Module" -ForegroundColor Green
     }
 
     ""
@@ -190,10 +203,31 @@ Function Check-Modules{
     }
     
     If($needSkypeModule -eq $true){
-        Write-LogEntry -LogName:$Log -LogEntryText "Skype for Business online module missing - https://www.microsoft.com/en-us/download/details.aspx?id=39366. Please install and re-run." -ForegroundColor Yellow
+        Write-LogEntry -LogName:$Log -LogEntryText "Skype for Business online module missing - https://www.microsoft.com/en-us/download/details.aspx?id=39366. Please install, restart powershell session, and re-run." -ForegroundColor Yellow
     }
     else{
         Import-module -Name SkypeOnlineConnector
+    }
+
+    If($needPNPModule -eq $true){
+        $check = Read-Host "Would you like to install the required PNP module? (Y/N)"
+        If($check -eq "Y" -or $check -eq "y"){
+            try{
+                Write-LogEntry -LogName:$Log -LogEntryText "Installing latest version of PNP Module..." -ForegroundColor White
+                Install-Module SharePointPnPPowerShellOnline -SkipPublisherCheck -AllowClobber
+                Write-LogEntry -LogName:$Log -LogEntryText "Successfully installed PNP Module." -ForegroundColor Green
+            }
+            catch{
+                Write-LogEntry -LogName:$Log -LogEntryText "Unable to install the PNP Module. Please install manually from here: https://docs.microsoft.com/en-us/powershell/sharepoint/sharepoint-pnp/sharepoint-pnp-cmdlets?view=sharepoint-ps" -ForegroundColor Yellow
+                Write-LogEntry -LogName:$Log -LogEntryText "$_" -ForegroundColor Red
+            }
+        }
+        Else{
+             Write-LogEntry -LogName:$Log -LogEntryText "Please install AzureADPreview to move forward: https://docs.microsoft.com/en-us/powershell/sharepoint/sharepoint-pnp/sharepoint-pnp-cmdlets?view=sharepoint-ps" -ForegroundColor Yellow
+        }
+    }
+    Else{
+        Import-module -Name SharePointPnPPowerShellOnline -ErrorAction SilentlyContinue
     }
 
     Write-LogEntry -LogName:$Log -LogEntryText "Pre-Flight Done" -ForegroundColor Green
@@ -304,21 +338,55 @@ Function Logon-O365MFA {
         }
     }
 
-    #TEAMS
-    try{$testTeams = Get-Team -erroraction silentlycontinue}
+    #PNP
+    try{$testPNP = Get-PnPAccessToken}
     catch{}
-    if(!$testTeams){
-        Write-LogEntry -LogName:$Log -LogEntryText "Connected to Microsoft Teams" -ForegroundColor Green
+    If($testPNP -ne $null){
+        Write-LogEntry -LogName:$Log -LogEntryText "Connected to PNP Online" -ForegroundColor Green
+        $Global:authToken = Get-PNPAccessToken
+        $Global:authHeader = @{
+            'Content-Type'='application/json'
+            'Authorization'="Bearer " + $authToken               
+        }
+        write-host "authtoken: $authtoken"
+        write-host "authHeader: $authHeader"
     }
     Else{
         try{
+            Import-Module SharePointPnPPowerShellOnline -DisableNameChecking
+            Connect-PnPMicrosoftGraph -Scopes "Group.ReadWrite.All"
+            $Global:authToken = Get-PNPAccessToken
+            $Global:authHeader = @{
+                'Content-Type'='application/json'
+                'Authorization'="Bearer " + $authToken               
+            }
+            Write-LogEntry -LogName:$Log -LogEntryText "Connected to PNP Online" -ForegroundColor Green
+        }
+        catch{
+            Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to PNP Online: $_" -ForegroundColor Red
+            $gotError = $true 
+        }
+    }
+
+    #TEAMS
+    try{
+        $testTeams = get-team
+        Write-LogEntry -LogName:$Log -LogEntryText "Connected to Microsoft Teams" -ForegroundColor Green
+    } 
+    #catch [Microsoft.Open.Teams.CommonLibrary.AadNeedAuthenticationException]{
+    catch{
+        try{
             Import-Module MicrosoftTeams
-            Connect-MicrosoftTeams | out-null
-            Write-LogEntry -LogName:$Log -LogEntryText "Connected to Microsoft Teams" -ForegroundColor Green
+            If ($Credential -eq $null){
+                $Credential = get-credential -credential $null
+            }
+            $connectTeams = Connect-MicrosoftTeams -Credential $Credential 
+            If($connectTeams){Write-LogEntry -LogName:$Log -LogEntryText "Connected to Microsoft Teams" -ForegroundColor Green}
+            Else{Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Teams. Hit Ctrl+C, Run Connect-MicrosoftTeams, then re-run script." -ForegroundColor Green}
         }
         catch{
             Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Microsoft Teams: $_" -ForegroundColor Red
-            $gotError = $true  
+            $gotError = $true 
         }
     }
 
@@ -433,6 +501,34 @@ Function Logon-O365{
         }
     }
 
+    #PNP
+    try{$testPNP = Get-PnPAccessToken}
+    catch{}
+    If($testPNP){
+        Write-LogEntry -LogName:$Log -LogEntryText "Connected to PNP Online" -ForegroundColor Green
+        $Global:authToken = Get-PNPAccessToken
+        $Global:authHeader = @{
+            'Content-Type'='application/json'
+            'Authorization'="Bearer " + $authToken               
+        }
+    }
+    Else{
+        try{
+            Import-Module SharePointPnPPowerShellOnline -DisableNameChecking
+            Connect-PnPMicrosoftGraph -Scopes "Group.ReadWrite.All"
+            $Global:authToken = Get-PNPAccessToken
+            $Global:authHeader = @{
+                'Content-Type'='application/json'
+                'Authorization'="Bearer " + $authToken               
+            }
+            Write-LogEntry -LogName:$Log -LogEntryText "Connected to PNP Online" -ForegroundColor Green
+        }
+        catch{
+            Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to PNP Online: $_" -ForegroundColor Red
+            $gotError = $true 
+        }
+    }
+
     #EXO
     $session = Get-PSSession | where {($_.ComputerName -eq "outlook.office365.com") -and ($_.State -eq "Opened")}
     If ($session -ne $null) {
@@ -441,7 +537,7 @@ Function Logon-O365{
     Else{
         try{
             If ($Credential -eq $null){
-                $Credential = Get-Credential
+                $Credential = get-credential -credential $null 
             }
             $exchangeSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri "https://outlook.office365.com/powershell-liveid/" -Credential $credential -Authentication Basic -AllowRedirection -WarningAction SilentlyContinue 
             #Import-PSSession -session $exchangeSession -DisableNameChecking -AllowClobber | out-null
@@ -455,25 +551,27 @@ Function Logon-O365{
     }    
 
     #TEAMS
-    try{$testTeams = Get-Team -erroraction silentlycontinue}
-    catch{}
-    if(!$testTeams){
+    try{
+        $testTeams = get-team
         Write-LogEntry -LogName:$Log -LogEntryText "Connected to Microsoft Teams" -ForegroundColor Green
-    }
-    Else{
+    } 
+    #catch [Microsoft.Open.Teams.CommonLibrary.AadNeedAuthenticationException]{
+    catch{
         try{
             Import-Module MicrosoftTeams
             If ($Credential -eq $null){
-                $Credential = Get-Credential
+                $Credential = get-credential -credential $null
             }
-            Connect-MicrosoftTeams -Credential $Credential | out-null
-            Write-LogEntry -LogName:$Log -LogEntryText "Connected to Microsoft Teams" -ForegroundColor Green
+            $connectTeams = Connect-MicrosoftTeams -Credential $Credential 
+            If($connectTeams){Write-LogEntry -LogName:$Log -LogEntryText "Connected to Microsoft Teams" -ForegroundColor Green}
+            Else{Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Teams. Hit Ctrl+C, Run Connect-MicrosoftTeams, then re-run script." -ForegroundColor Green}
         }
         catch{
             Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Microsoft Teams: $_" -ForegroundColor Red
             $gotError = $true 
         }
     }
+
 
     #SFBO
     try{$CSTenant = (Get-CsTenant).DisplayName}
@@ -484,11 +582,12 @@ Function Logon-O365{
     Else {
         try{
             If ($Credential -eq $null){
-                $Credential = Get-Credential
+                $Credential = get-credential -credential $null
             }
             Import-Module SkypeOnlineConnector
             $sfbSession = New-CsOnlineSession -Credential $Credential
-            Import-PSSession $sfbSession    
+            Import-PSSession $sfbSession | out-null
+            Write-LogEntry -LogName:$Log -LogEntryText "Connected to Skype for Business Online" -ForegroundColor Green   
         }
         catch{
             Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Skype for Business Online: $_" -ForegroundColor Red
@@ -505,7 +604,7 @@ Function Logon-O365{
     Else{
         try{
             If ($Credential -eq $null){
-                $Credential = Get-Credential
+                $Credential = get-credential -credential $null
             }
             $ccSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://ps.compliance.protection.outlook.com/powershell-liveid/ -Credential $Credential -Authentication Basic -AllowRedirection -WarningAction SilentlyContinue
             Import-PSSession -session $ccSession -Prefix cc -DisableNameChecking -AllowClobber | out-null
@@ -655,17 +754,22 @@ Function Get-Teams{
     )
 
     if (-not (Get-PSSession | where {($_.ComputerName -eq "outlook.office365.com") -and ($_.State -eq "Opened")})) {
-        throw "You must connect to Exchange Online Remote PowerShell..."
+        Write-LogEntry -LogName:$Log -LogEntryText "You must connect to Exchange Online Remote PowerShell..." -ForegroundColor Yellow
+        break
     }
     $testSPO = get-spotenant
     if (!$testSPO){
-        throw "You must connect to SharePoint Online PowerShell..."
+        Write-LogEntry -LogName:$Log -LogEntryText "You must connect to SharePoint Online PowerShell..." -ForegroundColor Yellow
+        break
     }
-    $testTeams = get-team
-    if(!$testTeams){
-        throw "You must connect to Microsoft Teams PowerShell..."
+
+    try{$testTeams = get-team} #using try catch since the admin may not be a member of any Teams, so not a valid way to test connection
+    #catch [Microsoft.Open.Teams.CommonLibrary.AadNeedAuthenticationException]{
+    catch{
+        Write-LogEntry -LogName:$Log -LogEntryText "You must connect to Microsoft Teams PowerShell..." -ForegroundColor Yellow
+        break
     }
-    
+
     Write-LogEntry -LogName:$Log -LogEntryText "Getting Teams report..." -ForegroundColor Yellow
     $o365groups = Get-UnifiedGroup -ResultSize Unlimited | where-object{$_.sharepointsiteurl -ne $null}
 
@@ -681,78 +785,79 @@ Function Get-Teams{
         $spoStorageQuota =  "$(($spoSite).StorageQuota)" + "MB"
         $spoStorageUsed = "$(($spoSite).StorageUsageCurrent)" + "MB"
         $spoSharingSetting = ($spoSite).SharingCapability
-        try {
-            $teamschannels = Get-TeamChannel -GroupId $o365group.ExternalDirectoryObjectId
-            $GroupTeam = [pscustomobject]@{GroupId = $o365group.ExternalDirectoryObjectId; 
-                GroupName = $o365group.DisplayName;
-                TeamsEnabled = $true;
-                ManagedBy = $o365group.ManagedBy 
-                WhenCreated = $o365group.WhenCreated;
-                PrimarySMTPAddress = $o365group.PrimarySMTPAddress;
-                GroupGuestSetting = $o365group.AllowAddGuests;
-                GroupAccessType = $o365group.AccessType;
-                GroupClassification = $o365group.Classification;
-                GroupMemberCount = $o365group.GroupMemberCount;
-                GroupExtMemberCount = $o365group.GroupExternalMemberCount; 
-                SPOSiteUrl =  $o365group.SharePointSiteUrl;
-                SPOStorageUsed = $spoStorageQuota;
-                SPOtorageQuota = $spoStorageUsed;
-                SPOSharingSetting = $spoSharingSetting;
-            }
-            $ListOfGroupsTeams.add($GroupTeam) | out-null
-        } catch {
-            $Exception = $_.Exception
-            if ($Exception.Message -like "*Connect-MicrosoftTeams*") {
-                throw $Exception
-            }
+        
+        #Microsoft Graph Query for Teams: https://developer.microsoft.com/en-us/graph/docs/api-reference/beta/api/group_list_endpoints
 
-            $ErrorCode = $Exception.ErrorCode
-            switch ($ErrorCode) {
-                "404" {
+        try {
+            $GroupsUri = "https://graph.microsoft.com/beta/groups/$($o365group.ExternalDirectoryObjectId)/endpoints"
+            $groupDetails = (Invoke-RestMethod -Uri $GroupsUri -Headers $authHeader -Method Get).value
+
+            If($groupDetails){
+                If($groupDetails.providerName -eq "Microsoft Teams"){
                     $GroupTeam = [pscustomobject]@{GroupId = $o365group.ExternalDirectoryObjectId; 
-                        GroupName = $o365group.DisplayName; 
-                        TeamsEnabled = $false;
-                        ManagedBy = $o365group.ManagedBy 
-                        WhenCreated = $o365group.WhenCreated;
-                        PrimarySMTPAddress = $o365group.PrimarySMTPAddress;
-                        GroupGuestSetting = $o365group.AllowAddGuests;
-                        GroupAccessType = $o365group.AccessType;
-                        GroupClassification = $o365group.Classification
-                        GroupMemberCount = $o365group.GroupMemberCount;
-                        GroupExtMemberCount = $o365group.GroupExternalMemberCount;  
-                        SPOSiteUrl =  $o365group.SharePointSiteUrl;
-                        SPOStorageUsed = $spoStorageQuota;
-                        SPOtorageQuota = $spoStorageUsed;
-                        SPOSharingSetting = $spoSharingSetting;
-                    }
-                    $ListOfGroupsTeams.add($GroupTeam) | out-null
-                    break;
-                }
-                "403" {
-                    $GroupTeam = [pscustomobject]@{GroupId = $o365group.ExternalDirectoryObjectId; 
-                        GroupName = $o365group.DisplayName; 
+                        GroupName = $o365group.DisplayName;
                         TeamsEnabled = $true;
+                        Provider = $groupDetails.providerName;
                         ManagedBy = $o365group.ManagedBy 
                         WhenCreated = $o365group.WhenCreated;
                         PrimarySMTPAddress = $o365group.PrimarySMTPAddress;
                         GroupGuestSetting = $o365group.AllowAddGuests;
                         GroupAccessType = $o365group.AccessType;
-                        GroupClassification = $o365group.Classification
+                        GroupClassification = $o365group.Classification;
                         GroupMemberCount = $o365group.GroupMemberCount;
-                        GroupExtMemberCount = $o365group.GroupExternalMemberCount;  
+                        GroupExtMemberCount = $o365group.GroupExternalMemberCount; 
                         SPOSiteUrl =  $o365group.SharePointSiteUrl;
                         SPOStorageUsed = $spoStorageQuota;
                         SPOtorageQuota = $spoStorageUsed;
                         SPOSharingSetting = $spoSharingSetting;
                     }
                     $ListOfGroupsTeams.add($GroupTeam) | out-null
-                    break;
                 }
-                default {
-                    Write-LogEntry -LogName:$Log -LogEntryText "Unknown ErrorCode trying to 'Get-TeamChannel -GroupId $($o365group)' :: $($ErrorCode)" -ForegroundColor Red
-                    $Errorcatch
+                Else{
+                    $GroupTeam = [pscustomobject]@{GroupId = $o365group.ExternalDirectoryObjectId; 
+                        GroupName = $o365group.DisplayName;
+                        TeamsEnabled = $false;
+                        Provider = $groupDetails.providerName;
+                        ManagedBy = $o365group.ManagedBy 
+                        WhenCreated = $o365group.WhenCreated;
+                        PrimarySMTPAddress = $o365group.PrimarySMTPAddress;
+                        GroupGuestSetting = $o365group.AllowAddGuests;
+                        GroupAccessType = $o365group.AccessType;
+                        GroupClassification = $o365group.Classification;
+                        GroupMemberCount = $o365group.GroupMemberCount;
+                        GroupExtMemberCount = $o365group.GroupExternalMemberCount; 
+                        SPOSiteUrl =  $o365group.SharePointSiteUrl;
+                        SPOStorageUsed = $spoStorageQuota;
+                        SPOtorageQuota = $spoStorageUsed;
+                        SPOSharingSetting = $spoSharingSetting;
+                    }
+                    $ListOfGroupsTeams.add($GroupTeam) | out-null
                 }
+
             }
+            Else{
+                $GroupTeam = [pscustomobject]@{GroupId = $o365group.ExternalDirectoryObjectId; 
+                    GroupName = $o365group.DisplayName;
+                    TeamsEnabled = $false;
+                    Provider = "";
+                    ManagedBy = $o365group.ManagedBy 
+                    WhenCreated = $o365group.WhenCreated;
+                    PrimarySMTPAddress = $o365group.PrimarySMTPAddress;
+                    GroupGuestSetting = $o365group.AllowAddGuests;
+                    GroupAccessType = $o365group.AccessType;
+                    GroupClassification = $o365group.Classification;
+                    GroupMemberCount = $o365group.GroupMemberCount;
+                    GroupExtMemberCount = $o365group.GroupExternalMemberCount; 
+                    SPOSiteUrl =  $o365group.SharePointSiteUrl;
+                    SPOStorageUsed = $spoStorageQuota;
+                    SPOtorageQuota = $spoStorageUsed;
+                    SPOSharingSetting = $spoSharingSetting;
+                }
+                $ListOfGroupsTeams.add($GroupTeam) | out-null
+            }
+        }
+        catch{
+            Write-LogEntry -LogName:$Log -LogEntryText "Error with Group: $($o365group.PrimarySMTPAddress) :: $_" -ForegroundColor White
         }
         $i++
     }
@@ -829,9 +934,13 @@ Function Get-TeamsSettings{
     Write-LogEntry -LogName:$Log -LogEntryText "Getting Teams Tenant Settings Report..." -ForegroundColor Yellow
 
     #pre-flight
-    try{Get-AzureADDirectorySettingTemplate | out-null}
+    try{
+        Import-module -Name AzureADPreview -force
+        Get-AzureADDirectorySettingTemplate | out-null
+    }
     catch{
-        throw "You must connect to Azure AD Preview PowerShell to gather Azure AD Groups information"
+        write-host "Unable to collect Teams Tenant Settings Report. You must connect to Azure AD Preview PowerShell to gather Azure AD Groups information"
+        break;
     }
 
     #variables
@@ -1046,36 +1155,29 @@ Function Get-TeamsByUser(){
     foreach ($o365group in $o365groups) {
         Write-Progress -Activity "Building collection of Teams/Groups by User" -Status "Processed $i of $count " -PercentComplete ($i/$count*100);
         try {
-            $teamschannels = Get-TeamChannel -GroupId $o365group.ExternalDirectoryObjectId
-            $groupID = $o365group.ExternalDirectoryObjectId
-            $addGroup = [pscustomobject]@{User = $user; GroupId = $groupID; GroupName = $o365group.DisplayName; TeamsEnabled = $true; IsOwner = $hashOfTeamsUserOwns[$groupID]} 
-            $listOfTeamsByUser.add($addGroup) | Out-Null
+            $GroupsUri = "https://graph.microsoft.com/beta/groups/$($o365group.ExternalDirectoryObjectId)/endpoints"
+            $groupDetails = (Invoke-RestMethod -Uri $GroupsUri -Headers $authHeader -Method Get).value
+
+            If($groupDetails){
+                If($groupDetails.providerName -eq "Microsoft Teams"){
+                    $groupID = $o365group.ExternalDirectoryObjectId
+                    $addGroup = [pscustomobject]@{User = $user; GroupId = $groupID; GroupName = $o365group.DisplayName; TeamsEnabled = $true; IsOwner = $hashOfTeamsUserOwns[$groupID]} 
+                    $listOfTeamsByUser.add($addGroup) | Out-Null
+                }
+                Else{
+                    $groupID = $o365group.ExternalDirectoryObjectId
+                    $addGroup = [pscustomobject]@{User = $user; GroupId = $groupID; GroupName = $o365group.DisplayName; TeamsEnabled = $false; IsOwner = $hashOfTeamsUserOwns[$groupID]} 
+                    $listOfTeamsByUser.add($addGroup) | Out-Null
+                }
+            }
+            Else{
+                $groupID = $o365group.ExternalDirectoryObjectId
+                $addGroup = [pscustomobject]@{User = $user; GroupId = $groupID; GroupName = $o365group.DisplayName; TeamsEnabled = $false; IsOwner = $hashOfTeamsUserOwns[$groupID]} 
+                $listOfTeamsByUser.add($addGroup) | Out-Null
+            }
         } 
         catch {
-            $Exception = $_.Exception
-            if ($Exception.Message -like "*Connect-MicrosoftTeams*") {
-                throw $Exception
-            }
-    
-            $ErrorCode = $Exception.ErrorCode
-            switch ($ErrorCode) {
-                "404" {
-                    $groupID = $o365group.ExternalDirectoryObjectId
-                    $addGroup = [pscustomobject]@{User = $user; GroupId = $groupID; GroupName = $o365group.DisplayName; TeamsEnabled = $false; IsOwner = $hashOfTeamsUserOwns[$groupID]} 
-                    $listOfTeamsByUser.add($addGroup) | Out-Null
-                    break;
-                }
-                "403" {
-                    $groupID = $o365group.ExternalDirectoryObjectId
-                    $addGroup = [pscustomobject]@{User = $user; GroupId = $groupID; GroupName = $o365group.DisplayName; TeamsEnabled = $false; IsOwner = $hashOfTeamsUserOwns[$groupID]} 
-                    $listOfTeamsByUser.add($addGroup) | Out-Null
-                    break;
-                }
-                default {
-                    Write-Error ("Unknown ErrorCode trying to 'Get-TeamChannel -GroupId {0}' :: {1}" -f $o365group, $ErrorCode)
-                    $Errorcatch
-                }
-            }
+            Write-LogEntry -LogName:$Log -LogEntryText "Error with Group: $($o365group.PrimarySMTPAddress) :: $_" -ForegroundColor White
         }
         $i++
     }
@@ -1088,9 +1190,12 @@ Function Get-UsersCanCreateTeams(){
     Write-LogEntry -LogName:$Log -LogEntryText "Getting Users-Can-Create-Teams Report..." -ForegroundColor Yellow
 
     #pre-flight
-    try{Get-AzureADDirectorySettingTemplate | out-null}
+    try{
+        Import-module -Name AzureADPreview -force
+        Get-AzureADDirectorySettingTemplate | out-null
+    }
     catch{
-        write-host "You must connect to Azure AD Preview PowerShell to gather Azure AD Groups information"
+        write-host "Unable to collect Users-Can-Create-Teams Report. You must connect to Azure AD Preview PowerShell to gather Azure AD Groups information"
         break;
     }
 
@@ -1283,7 +1388,11 @@ Do {
             catch{}
             try{Disconnect-SPOService -erroraction silentlycontinue}
             catch{}
+            try{Disconnect-PnPOnline -erroraction silentlycontinue}
+            catch{}
             try{Disconnect-MicrosoftTeams -erroraction silentlycontinue}
+            catch{}
+            try{Get-PSSession | Remove-PSSession}
             catch{}
             Write-Host "Exiting..."
 		}
