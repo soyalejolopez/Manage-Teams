@@ -807,8 +807,8 @@ Function Get-Teams{
                         GroupMemberCount = $o365group.GroupMemberCount;
                         GroupExtMemberCount = $o365group.GroupExternalMemberCount; 
                         SPOSiteUrl =  $o365group.SharePointSiteUrl;
-                        SPOStorageUsed = $spoStorageQuota;
-                        SPOtorageQuota = $spoStorageUsed;
+                        SPOStorageUsed = $spoStorageUsed;
+                        SPOtorageQuota = $spoStorageQuota ;
                         SPOSharingSetting = $spoSharingSetting;
                     }
                     $ListOfGroupsTeams.add($GroupTeam) | out-null
@@ -827,8 +827,8 @@ Function Get-Teams{
                         GroupMemberCount = $o365group.GroupMemberCount;
                         GroupExtMemberCount = $o365group.GroupExternalMemberCount; 
                         SPOSiteUrl =  $o365group.SharePointSiteUrl;
-                        SPOStorageUsed = $spoStorageQuota;
-                        SPOtorageQuota = $spoStorageUsed;
+                        SPOStorageUsed = $spoStorageUsed;
+                        SPOtorageQuota = $spoStorageQuota ;
                         SPOSharingSetting = $spoSharingSetting;
                     }
                     $ListOfGroupsTeams.add($GroupTeam) | out-null
@@ -849,8 +849,8 @@ Function Get-Teams{
                     GroupMemberCount = $o365group.GroupMemberCount;
                     GroupExtMemberCount = $o365group.GroupExternalMemberCount; 
                     SPOSiteUrl =  $o365group.SharePointSiteUrl;
-                    SPOStorageUsed = $spoStorageQuota;
-                    SPOtorageQuota = $spoStorageUsed;
+                    SPOStorageUsed = $spoStorageUsed;
+                    SPOtorageQuota = $spoStorageQuota ;
                     SPOSharingSetting = $spoSharingSetting;
                 }
                 $ListOfGroupsTeams.add($GroupTeam) | out-null
@@ -898,15 +898,16 @@ Function Get-TeamsMembersGuests(){
                         Membership = "Owner"}
                 $membership.add($record) | out-null
             }
-            $members = Get-UnifiedGroupLinks -Identity $team.GroupID -linktype Members | where-object {($membership.Member -notcontains $_.PrimarySMTPAddress)}
+            #$members = Get-UnifiedGroupLinks -Identity $team.GroupID -linktype Members | where-object {($membership.Member -notcontains $_.PrimarySMTPAddress)}
+            $members = Get-UnifiedGroupLinks -Identity $team.GroupID -linktype Members 
             foreach($MemberOrGuest in $members){
                 If($MemberOrGuest.Name -like "*#EXT#*"){
                     $record = [pscustomobject]@{GroupID = $team.GroupID;
                         GroupName = $team.GroupName;
                         TeamsEnabled = $team.TeamsEnabled;
-                        Member = $owner.PrimarySMTPAddress;
-                        Name = $owner.Name;
-                        RecipientType = $owner.RecipientType;
+                        Member = $MemberOrGuest.PrimarySMTPAddress;
+                        Name = $MemberOrGuest.Name;
+                        RecipientType = $MemberOrGuest.RecipientType;
                         Membership = "Guest"}
                     $membership.add($record) | out-null
                 }
@@ -914,9 +915,9 @@ Function Get-TeamsMembersGuests(){
                     $record = [pscustomobject]@{GroupID = $team.GroupID;
                         GroupName = $team.GroupName;
                         TeamsEnabled = $team.TeamsEnabled;
-                        Member = $owner.PrimarySMTPAddress;
-                        Name = $owner.Name;
-                        RecipientType = $owner.RecipientType;
+                        Member = $MemberOrGuest.PrimarySMTPAddress;
+                        Name = $MemberOrGuest.Name;
+                        RecipientType = $MemberOrGuest.RecipientType;
                         Membership = "Member"}
                     $membership.add($record) | out-null
                 }
