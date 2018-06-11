@@ -37,6 +37,7 @@ REQUIREMENTS:
     -PNP Module - https://docs.microsoft.com/en-us/powershell/sharepoint/sharepoint-pnp/sharepoint-pnp-cmdlets?view=sharepoint-ps
 
 VERSION:
+    06112018: Update MFA module
     06072018: Update Get-Teams Logic to use Microsoft Graph
     05302018: Added MFA Logon Capability, Teams by User, Teams without Owners
     02072018: v1
@@ -146,7 +147,7 @@ Function Check-Modules{
         Write-LogEntry -LogName:$Log -LogEntryText "Please install the EXO/SCC Click Once App and re-run pre-flight check: https://cmdletpswmodule.blob.core.windows.net/exopsmodule/Microsoft.Online.CSE.PSModule.Client.application" -ForegroundColor Yellow
     }
     ElseIf($acctHasMFA -eq "Y" -or $acctHasMFA -eq "y" ){
-        $script = Load-ExchangeMFAModule 
+        Import-Module $((Get-ChildItem -Path $($env:LOCALAPPDATA+"\Apps\2.0\") -Filter Microsoft.Exchange.Management.ExoPowershellModule.dll -Recurse ).FullName| ?{$_ -notmatch "_none_"} | select -First 1)
     }
 
     If($needAADPModuleInstall -eq $true){
@@ -253,45 +254,6 @@ Param(
     return ( (Get-ClickOnce -ApplicationName $ApplicationName) -ne $null) 
 }
 
-#EXO and SCC MFA Module
-Function Load-ExchangeMFAModule { 
-    [CmdletBinding()] 
-    Param ()
-        $Modules = @(Get-ChildItem -Path "$($env:LOCALAPPDATA)\Apps\2.0" -Filter "Microsoft.Exchange.Management.ExoPowershellModule.manifest" -Recurse )
-        if ($Modules.Count -ne 1 ) {
-            throw "No or Multiple Modules found : Count = $($Modules.Count )"  
-        }  else {
-            $ModuleName =  Join-path $Modules[0].Directory.FullName "Microsoft.Exchange.Management.ExoPowershellModule.dll"
-            Write-Verbose "Start Importing MFA Module"
-            Import-Module -FullyQualifiedName $ModuleName  -Force 
-    
-            $ScriptName =  Join-path $Modules[0].Directory.FullName "CreateExoPSSession.ps1"
-            if (Test-Path $ScriptName) {
-                return $ScriptName
-    <# 
-                # Load the script to add the additional commandlets (Connect-EXOPSSession) 
-                # DotSourcing does not work from inside a function (. $ScriptName) 
-                #Therefore load the script as a dynamic module instead 
-     
-                $content = Get-Content -Path $ScriptName -Raw -ErrorAction Stop 
-                #BugBug >> $PSScriptRoot is Blank :-( 
-    <# 
-                $PipeLine = $Host.Runspace.CreatePipeline() 
-                $PipeLine.Commands.AddScript(". $scriptName") 
-                $r = $PipeLine.Invoke() 
-    #Err : Pipelines cannot be run concurrently. 
-     
-                $scriptBlock = [scriptblock]::Create($content) 
-                New-Module -ScriptBlock $scriptBlock -Name "Microsoft.Exchange.Management.CreateExoPSSession.ps1" -ReturnResult -ErrorAction SilentlyContinue 
-    #>
-    
-            } else {
-                throw "Script not found"
-                return $null
-            }
-        }
-    }
-
 #Logging Function
 Function Write-LogEntry {
     param(
@@ -354,7 +316,7 @@ Function Logon-O365MFA {
     Else{
         try{
             Import-Module SharePointPnPPowerShellOnline -DisableNameChecking
-            Connect-PnPMicrosoftGraph -Scopes "Group.ReadWrite.All"
+            Connect-PnPOnline -Scopes "Group.ReadWrite.All"
             $Global:authToken = Get-PNPAccessToken
             $Global:authHeader = @{
                 'Content-Type'='application/json'
@@ -377,12 +339,8 @@ Function Logon-O365MFA {
     catch{
         try{
             Import-Module MicrosoftTeams
-            If ($Credential -eq $null){
-                $Credential = get-credential -credential $null
-            }
-            $connectTeams = Connect-MicrosoftTeams -Credential $Credential 
-            If($connectTeams){Write-LogEntry -LogName:$Log -LogEntryText "Connected to Microsoft Teams" -ForegroundColor Green}
-            Else{Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Teams. Hit Ctrl+C, Run Connect-MicrosoftTeams, then re-run script." -ForegroundColor Green}
+            Connect-MicrosoftTeams 
+            Write-LogEntry -LogName:$Log -LogEntryText "Connected to Microsoft Teams" -ForegroundColor Green
         }
         catch{
             Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Microsoft Teams: $_" -ForegroundColor Red
@@ -398,7 +356,10 @@ Function Logon-O365MFA {
     }
     Else{
         try{
-            Connect-EXOPSSession 
+            #Import-Module $((Get-ChildItem -Path $($env:LOCALAPPDATA+"\Apps\2.0\") -Filter Microsoft.Exchange.Management.ExoPowershellModule.dll -Recurse).FullName|?{$_ -notmatch "_none_"}|select -First 1)
+            Import-Module $((Get-ChildItem -Path $($env:LOCALAPPDATA+"\Apps\2.0\") -Filter Microsoft.Exchange.Management.ExoPowershellModule.dll -Recurse ).FullName| ?{$_ -notmatch "_none_"} | select -First 1)
+            $EXOSession = New-ExoPSSession
+            Import-PSSession $EXOSession | out-null
             Write-LogEntry -LogName:$Log -LogEntryText "Connected to Exchange Online" -ForegroundColor Green
         }
         catch{
@@ -464,7 +425,7 @@ Function Logon-O365MFA {
         try{
             Import-Module SkypeOnlineConnector
             $sfbSession = New-CsOnlineSession 
-            Import-PSSession $sfbSession    
+            Import-PSSession $sfbSession | out-null    
         }
         catch{
             Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Skype for Business Online: $_" -ForegroundColor Red
@@ -515,7 +476,7 @@ Function Logon-O365{
     Else{
         try{
             Import-Module SharePointPnPPowerShellOnline -DisableNameChecking
-            Connect-PnPMicrosoftGraph -Scopes "Group.ReadWrite.All"
+            Connect-PnPOnline -Scopes "Group.ReadWrite.All"
             $Global:authToken = Get-PNPAccessToken
             $Global:authHeader = @{
                 'Content-Type'='application/json'
@@ -1268,6 +1229,7 @@ Clear-Host
 $yyyyMMdd = Get-Date -Format 'yyyyMMdd'
 $computer = $env:COMPUTERNAME
 $user = $env:USERNAME
+$version = "06112018"
 $log = "$PSScriptRoot\Manage-Teams-$yyyyMMdd.log"
 $output = $PSScriptRoot
 $TeamsCSV = "$($output)\ListOfTeams.csv"
@@ -1277,7 +1239,7 @@ $UsersCanCreateCSV = "$($output)\ListOfUsersThatCanCreateTeams.csv"
 $teamsSettingsOut = "$($output)\ListOfTeamsSettings.txt"
 $TeamsByUserCSV = "$($output)\ListOfTeamsByUser.csv"
 $groupsNoOwnersCSV = "$($output)\ListOfTeamsWithoutOwners.csv"
-Write-LogEntry -LogName:$Log -LogEntryText "User: $user Computer: $computer" -foregroundcolor Yellow
+Write-LogEntry -LogName:$Log -LogEntryText "User: $user Computer: $computer Version: $version" -foregroundcolor Yellow
 #endregion Variables
 
 [string] $menu = @'
