@@ -228,7 +228,7 @@ Function Check-Modules{
         }
     }
     Else{
-        Import-module -Name SharePointPnPPowerShellOnline -ErrorAction SilentlyContinue
+        Import-module -Name SharePointPnPPowerShellOnline -DisableNameChecking -ErrorAction SilentlyContinue
     }
 
     Write-LogEntry -LogName:$Log -LogEntryText "Pre-Flight Done" -ForegroundColor Green
@@ -289,7 +289,11 @@ Function Logon-O365MFA {
     Else{
         try{
             Import-Module "C:\Program Files\SharePoint Online Management Shell\Microsoft.Online.SharePoint.PowerShell\Microsoft.Online.SharePoint.PowerShell.dll" -DisableNameChecking
-            $domainHost = Read-Host "Enter tenant name, such as contoso for contoso.onmicrosoft.com" 
+            $domainHost = Read-Host "Enter tenant name, such as contoso for contoso.onmicrosoft.com"
+            If($domainHost -like "*.onmicrosoft.com"){
+                $split = $domainHost.split(".")
+                $domainHost = $split[0]
+            } 
             $spoAdminUrl = "https://$domainHost-admin.sharepoint.com"
             Connect-SPOService -Url $spoAdminUrl 
             Write-LogEntry -LogName:$Log -LogEntryText "Connected to SharePoint Online" -ForegroundColor Green
@@ -451,7 +455,11 @@ Function Logon-O365{
     Else{
         try{
             Import-Module "C:\Program Files\SharePoint Online Management Shell\Microsoft.Online.SharePoint.PowerShell\Microsoft.Online.SharePoint.PowerShell.dll" -DisableNameChecking
-            $domainHost = Read-Host "Enter tenant name, such as contoso for contoso.onmicrosoft.com" 
+            $domainHost = Read-Host "Enter tenant name, such as contoso for contoso.onmicrosoft.com"
+            If($domainHost -like "*.onmicrosoft.com"){
+                $split = $domainHost.split(".")
+                $domainHost = $split[0]
+            }  
             $spoAdminUrl = "https://$domainHost-admin.sharepoint.com"
             Connect-SPOService -Url $spoAdminUrl #not passing credentials due to known issue with connect-sposervice
             Write-LogEntry -LogName:$Log -LogEntryText "Connected to SharePoint Online" -ForegroundColor Green
