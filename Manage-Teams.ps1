@@ -550,11 +550,8 @@ Function Logon-O365{
     }
     Else {
         try{
-            If ($Credential -eq $null){
-                $Credential = get-credential -credential $null
-            }
             Import-Module SkypeOnlineConnector
-            $sfbSession = New-CsOnlineSession -Credential $Credential
+            $sfbSession = New-CsOnlineSession #not passing the $credential beause of AADSTS90014 error
             Import-PSSession $sfbSession | out-null
             Write-LogEntry -LogName:$Log -LogEntryText "Connected to Skype for Business Online" -ForegroundColor Green   
         }
@@ -1033,11 +1030,13 @@ Function Get-TeamsSettings{
 
 #Get Teams not being used
 Function Get-InactiveTeams(){
-    $WarningDate = (Get-Date).AddDays(-90) #90 days
+    $inactiveDays = -90
+
+    $WarningDate = (Get-Date).AddDays($inactiveDays) #90 days
     $Today = (Get-Date)
     $Date = $Today.ToShortDateString()
 
-    Write-LogEntry -LogName:$Log -LogEntryText "Getting Inactive Teams Report..." -ForegroundColor Yellow
+    Write-LogEntry -LogName:$Log -LogEntryText "Getting Inactive Teams Report Based on Inactivity for $inactiveDays Days..." -ForegroundColor Yellow
 
     If(!$ListOfGroupsTeams){
         Write-LogEntry -LogName:$Log -LogEntryText "List of Teams Not Found, Getting That Report First..." -ForegroundColor White
@@ -1057,20 +1056,23 @@ Function Get-InactiveTeams(){
         $MailboxStatus = "Normal"
         
         If ($Data.NewestItemReceivedDate -le $WarningDate){
-            #90 days since any activity in the group mailbox
+            #days since any activity in the group mailbox
             $MailboxStatus = "Inactive"
         }
-        If ($Data.ItemsInFolder -lt 20){
-            #Less than 20 conversations
-            $MailboxStatus = "Inactive"
-        }
+        <# If want to check for items in folder
+            If ($Data.ItemsInFolder -lt 20){
+                #Less than 20 conversations
+                $MailboxStatus = "Inactive"
+            }
+        #>
 
         $SPOLastContentModified = (get-sposite $team.SPOSiteUrl).LastContentModifiedDate
-        $SPOStorageUsageCurrent = (get-sposite $team.SPOSiteUrl).StorageUsageCurrent
+        <# If want to check for usage
+            #$SPOStorageUsageCurrent = (get-sposite $team.SPOSiteUrl).StorageUsageCurrent
+        #>
         $SPOStatus = "Active"
 
         If ($SPOLastContentModified -le $WarningDate){
-            #no activity in the last 90 days
             $SPOStatus = "Inactive"
         }
 
