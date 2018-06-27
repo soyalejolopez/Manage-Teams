@@ -13,9 +13,9 @@ What this script does:
     2) Get Teams
         Properties: "GroupId","GroupName","TeamsEnabled","Provider","ManagedBy","WhenCreated","PrimarySMTPAddress","GroupGuestSetting","GroupAccessType","GroupClassification","GroupMemberCount","GroupExtMemberCount","SPOSiteUrl","SPOStorageUsed","SPOtorageQuota","SPOSharingSetting"
     3) Get Teams Membership
-        Properties: "GroupID","GroupName","TeamsEnabled","Member","Name","RecipientType","Membership"
+        Properties: "GroupID","GroupName","TeamsEnabled","GroupEmail","GroupTotalMemberCount","GroupEXTMemberCount","Owners","Members","Guests"
     4) Get Teams That Are Not Active
-        Properties: "GroupID","Name","TeamsEnabled","PrimarySMTPAddress","MailboxStatus","LastConversationDate","NumOfConversations","SPOStatus","LastContentModified","StorageUsageCurrent"
+        Properties: "GroupID","Name","TeamsEnabled","PrimarySMTPAddress","TeamsChatStatus","LastTeamsChatDate","NumOfTeamsChats","MailboxStatus","LastGroupEmailDate","NumOfGroupEmails","SPOStatus","SPOLastItemUserModifiedDate","SPOStorageUsageCurrent"
     5) Get Users That Are Allowed To Create Teams
         Properties: "ObjectID","DisplayName","UserPrincipalName","UserType" 
     6) Get Teams Tenant Settings
@@ -37,6 +37,9 @@ REQUIREMENTS:
     -PNP Module - https://docs.microsoft.com/en-us/powershell/sharepoint/sharepoint-pnp/sharepoint-pnp-cmdlets?view=sharepoint-ps
 
 VERSION:
+    06272018: Update membership report to consolidate members/guests
+    06262018: Update inactive report logic to use LastItemUserModifiedDate. Updated Teams report to get person who created Group
+    06192018: Update inactive report logic
     06112018: Update MFA module
     06072018: Update Get-Teams Logic to use Microsoft Graph
     05302018: Added MFA Logon Capability, Teams by User, Teams without Owners
@@ -280,8 +283,18 @@ Function Logon-O365MFA {
     start-sleep 2
     $gotError = $false
 
+    If(!$spoAdminUrl){
+        $domainHost = Read-Host "Enter tenant name, such as contoso for contoso.onmicrosoft.com"
+        If($domainHost -like "*.onmicrosoft.com"){
+            $split = $domainHost.split(".")
+            $domainHost = $split[0]
+        }
+        $Global:spoAdminUrl = "https://$domainHost-admin.sharepoint.com"
+        $Global:adminUPN = Read-Host "Enter your admin UPN, e.g. admin@contoso.com" 
+    }
+    
     #SPO
-    try{$testSPO = get-spotenant -erroraction silentlycontinue}
+    try{$testSPO = get-spotenant -erroraction silentlycontinue   }
     catch{}
     If($testSPO -ne $null){
         Write-LogEntry -LogName:$Log -LogEntryText "Connected to SharePoint Online" -ForegroundColor Green
@@ -289,12 +302,6 @@ Function Logon-O365MFA {
     Else{
         try{
             Import-Module "C:\Program Files\SharePoint Online Management Shell\Microsoft.Online.SharePoint.PowerShell\Microsoft.Online.SharePoint.PowerShell.dll" -DisableNameChecking
-            $domainHost = Read-Host "Enter tenant name, such as contoso for contoso.onmicrosoft.com"
-            If($domainHost -like "*.onmicrosoft.com"){
-                $split = $domainHost.split(".")
-                $domainHost = $split[0]
-            } 
-            $spoAdminUrl = "https://$domainHost-admin.sharepoint.com"
             Connect-SPOService -Url $spoAdminUrl 
             Write-LogEntry -LogName:$Log -LogEntryText "Connected to SharePoint Online" -ForegroundColor Green
         }
@@ -304,11 +311,11 @@ Function Logon-O365MFA {
         }
     }
 
-    #PNP
-    try{$testPNP = Get-PnPAccessToken}
+    #Microsoft Graph
+    try{$testGraph = Get-PnPAccessToken}
     catch{}
-    If($testPNP -ne $null){
-        Write-LogEntry -LogName:$Log -LogEntryText "Connected to PNP Online" -ForegroundColor Green
+    If($testGraph -ne $null){
+        Write-LogEntry -LogName:$Log -LogEntryText "Connected to Microsoft Graph" -ForegroundColor Green
         $Global:authToken = Get-PNPAccessToken
         $Global:authHeader = @{
             'Content-Type'='application/json'
@@ -322,14 +329,34 @@ Function Logon-O365MFA {
             Import-Module SharePointPnPPowerShellOnline -DisableNameChecking
             Connect-PnPOnline -Scopes "Group.ReadWrite.All"
             $Global:authToken = Get-PNPAccessToken
+            $Global:authTokenDecoded = Get-PNPAccessToken
             $Global:authHeader = @{
                 'Content-Type'='application/json'
                 'Authorization'="Bearer " + $authToken               
             }
+            Write-LogEntry -LogName:$Log -LogEntryText "Access Token: Valid From=$($authTokenDecoded.ValidFrom) | Valid To=$($authTokenDecoded.ValidTo)" 
+            Write-LogEntry -LogName:$Log -LogEntryText "Connected to Microsoft Graph" -ForegroundColor Green
+        }
+        catch{
+            Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Microsoft Graph: $_" -ForegroundColor Red
+            $gotError = $true 
+        }
+    }
+
+    #PNP
+    try{$testPNP = Get-PnPSite}
+    catch{}
+    If($testPNP -ne $null){
+        Write-LogEntry -LogName:$Log -LogEntryText "Connected to PNP Online" -ForegroundColor Green
+    }
+    Else{
+        try{
+            Import-Module SharePointPnPPowerShellOnline -DisableNameChecking
+            Connect-PnPOnline -Url $spoAdminUrl -UseWebLogin
             Write-LogEntry -LogName:$Log -LogEntryText "Connected to PNP Online" -ForegroundColor Green
         }
         catch{
-            Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to PNP Online: $_" -ForegroundColor Red
+            Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to PnP. If you get an error due to External Sharing not enabled. Clear your IE cache and re-run the script. Error: $_" -ForegroundColor Red
             $gotError = $true 
         }
     }
@@ -377,7 +404,7 @@ Function Logon-O365MFA {
     #https://docs.microsoft.com/en-us/powershell/exchange/office-365-scc/connect-to-scc-powershell/mfa-connect-to-scc-powershell?view=exchange-ps
     #https://techcommunity.microsoft.com/t5/Windows-PowerShell/Can-I-Connect-to-O365-Security-amp-Compliance-center-via/td-p/68898
     #Potential workaround: https://gallery.technet.microsoft.com/Office-365-Connection-47e03052
-    <#
+  
     try{$testSCC = Get-DlpSensitiveInformationType}
     catch{}
     If($testSCC -ne $null){
@@ -385,7 +412,12 @@ Function Logon-O365MFA {
     }
     Else{
         try{
-            Connect-IPPSSession
+            #Connect-IPPSSession
+            #https://techcommunity.microsoft.com/t5/Windows-PowerShell/Can-I-Connect-to-O365-Security-amp-Compliance-center-via/td-p/68898
+            $SCCuri = "https://ps.compliance.protection.outlook.com/powershell-liveid/"
+            Import-Module $((Get-ChildItem -Path $($env:LOCALAPPDATA + "\Apps\2.0\") -Filter Microsoft.Exchange.Management.ExoPowershellModule.dll -Recurse).FullName | ?{ $_ -notmatch "_none_" } | select -First 1)
+            $SCCSession = New-EXOPSSession -ConnectionUri $SCCuri 
+            Import-PSSession $SCCSession -AllowClobber | Out-Null
             Write-LogEntry -LogName:$Log -LogEntryText "Connected to Security and Compliance Center" -ForegroundColor Green
         }
         catch{
@@ -393,7 +425,7 @@ Function Logon-O365MFA {
             $gotError = $true
         }
     }
-    #>
+ 
 
     #Azure AD 
     try{$testAAD = Get-AzureADCurrentSessionInfo -erroraction silentlycontinue}
@@ -444,56 +476,106 @@ Function Logon-O365MFA {
 }
 
 Function Logon-O365{
+    Write-LogEntry -LogName:$Log -LogEntryText "Multiple prompts are expected as we connect to each service..." -ForegroundColor Yellow
+    start-sleep 2
     $gotError = $false
 
+    If(!$spoAdminUrl){
+        $domainHost = Read-Host "Enter tenant name, such as contoso for contoso.onmicrosoft.com"
+        If($domainHost -like "*.onmicrosoft.com"){
+            $split = $domainHost.split(".")
+            $domainHost = $split[0]
+        }
+        $Global:spoAdminUrl = "https://$domainHost-admin.sharepoint.com"
+    }
+    If (!$Credential){
+        $Global:adminUPN = Read-Host "Enter your admin UPN, e.g. admin@contoso.com"
+        $Global:Credential = get-credential -credential $null 
+    }
+
     #SPO
-    try{$testSPO = get-spotenant -erroraction silentlycontinue}
-    catch{}
-    If($testSPO -ne $null){
+    try{
+        $testSPO = get-spotenant -erroraction silentlycontinue
         Write-LogEntry -LogName:$Log -LogEntryText "Connected to SharePoint Online" -ForegroundColor Green
     }
-    Else{
+    catch{
         try{
             Import-Module "C:\Program Files\SharePoint Online Management Shell\Microsoft.Online.SharePoint.PowerShell\Microsoft.Online.SharePoint.PowerShell.dll" -DisableNameChecking
-            $domainHost = Read-Host "Enter tenant name, such as contoso for contoso.onmicrosoft.com"
-            If($domainHost -like "*.onmicrosoft.com"){
-                $split = $domainHost.split(".")
-                $domainHost = $split[0]
-            }  
-            $spoAdminUrl = "https://$domainHost-admin.sharepoint.com"
-            Connect-SPOService -Url $spoAdminUrl #not passing credentials due to known issue with connect-sposervice
+            If (!$Credential){
+                $Global:Credential = get-credential -credential $null 
+            }
+            Connect-SPOService -Url $spoAdminUrl -Credential $Credential 
             Write-LogEntry -LogName:$Log -LogEntryText "Connected to SharePoint Online" -ForegroundColor Green
         }
         catch{
-            Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to SharePoint Online: $_" -ForegroundColor Red
-            $gotError = $true 
+            try{
+                Import-Module "C:\Program Files\SharePoint Online Management Shell\Microsoft.Online.SharePoint.PowerShell\Microsoft.Online.SharePoint.PowerShell.dll" -DisableNameChecking
+                Connect-SPOService -Url $spoAdminUrl #not passing credentials due to known issue with connect-sposervice
+                Write-LogEntry -LogName:$Log -LogEntryText "Connected to SharePoint Online" -ForegroundColor Green
+            }
+            catch{
+                Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to SharePoint Online: $_" -ForegroundColor Red
+                $gotError = $true 
+            }
         }
     }
 
     #PNP
-    try{$testPNP = Get-PnPAccessToken}
-    catch{}
-    If($testPNP){
+    try{
+        $testPNP = Get-PnPSite
+        $Global:pnpConnection = Get-PnPConnection
         Write-LogEntry -LogName:$Log -LogEntryText "Connected to PNP Online" -ForegroundColor Green
+    }
+    catch{
+        try{
+            Import-Module SharePointPnPPowerShellOnline -DisableNameChecking
+            If (!$Credential){
+                $Global:Credential = get-credential -credential $null 
+            }
+            Connect-PnPOnline -Url $spoAdminUrl -Credentials $Credential
+            $Global:pnpConnection = Get-PnPConnection
+            Write-LogEntry -LogName:$Log -LogEntryText "Connected to PNP Online" -ForegroundColor Green
+        }
+        catch{
+            try{
+                Import-Module SharePointPnPPowerShellOnline -DisableNameChecking
+                Connect-PnPOnline -Url $spoAdminUrl
+                $Global:pnpConnection = Get-PnPConnection
+                Write-LogEntry -LogName:$Log -LogEntryText "Connected to PNP Online" -ForegroundColor Green
+            }
+            catch{
+                Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to PnP: $_" -ForegroundColor Red
+                $gotError = $true 
+            }
+        }
+    }
+
+
+    #PNP - Microsoft Graph
+    try{
+        $testGraph = Get-PnPAccessToken
+        Write-LogEntry -LogName:$Log -LogEntryText "Connected to Microsoft Graph" -ForegroundColor Green
         $Global:authToken = Get-PNPAccessToken
         $Global:authHeader = @{
             'Content-Type'='application/json'
             'Authorization'="Bearer " + $authToken               
         }
     }
-    Else{
+    catch{
         try{
             Import-Module SharePointPnPPowerShellOnline -DisableNameChecking
-            Connect-PnPOnline -Scopes "Group.ReadWrite.All"
+            Connect-PnPOnline -Scopes "Group.ReadWrite.All" #,"Directory.Read.All","Sites.Read.All" #https://developer.microsoft.com/en-us/graph/docs/concepts/permissions_reference
             $Global:authToken = Get-PNPAccessToken
+            $Global:authTokenDecoded = Get-PNPAccessToken
             $Global:authHeader = @{
                 'Content-Type'='application/json'
                 'Authorization'="Bearer " + $authToken               
             }
-            Write-LogEntry -LogName:$Log -LogEntryText "Connected to PNP Online" -ForegroundColor Green
+            Write-LogEntry -LogName:$Log -LogEntryText "Access Token: Valid From=$($authTokenDecoded.ValidFrom) | Valid To=$($authTokenDecoded.ValidTo)" 
+            Write-LogEntry -LogName:$Log -LogEntryText "Connected to Microsoft Graph" -ForegroundColor Green
         }
         catch{
-            Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to PNP Online: $_" -ForegroundColor Red
+            Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Microsoft Graph: $_" -ForegroundColor Red
             $gotError = $true 
         }
     }
@@ -505,8 +587,8 @@ Function Logon-O365{
     }
     Else{
         try{
-            If ($Credential -eq $null){
-                $Credential = get-credential -credential $null 
+            If (!$Credential){
+                $Global:Credential = get-credential -credential $null 
             }
             $exchangeSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri "https://outlook.office365.com/powershell-liveid/" -Credential $credential -Authentication Basic -AllowRedirection -WarningAction SilentlyContinue 
             #Import-PSSession -session $exchangeSession -DisableNameChecking -AllowClobber | out-null
@@ -531,82 +613,123 @@ Function Logon-O365{
             If ($Credential -eq $null){
                 $Credential = get-credential -credential $null
             }
-            $connectTeams = Connect-MicrosoftTeams -Credential $Credential 
-            If($connectTeams){Write-LogEntry -LogName:$Log -LogEntryText "Connected to Microsoft Teams" -ForegroundColor Green}
-            Else{Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Teams. Hit Ctrl+C, Run Connect-MicrosoftTeams, then re-run script." -ForegroundColor Green}
+            Connect-MicrosoftTeams -Credential $Credential | out-null
+            Write-LogEntry -LogName:$Log -LogEntryText "Connected to Microsoft Teams" -ForegroundColor Green
         }
         catch{
-            Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Microsoft Teams: $_" -ForegroundColor Red
-            $gotError = $true 
+            try{
+                Import-Module MicrosoftTeams
+                Connect-MicrosoftTeams 
+                Write-LogEntry -LogName:$Log -LogEntryText "Connected to Microsoft Teams" -ForegroundColor Green
+            }
+            catch{
+                Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Microsoft Teams: $_" -ForegroundColor Red
+                $gotError = $true 
+            }
         }
     }
 
 
     #SFBO
-    try{$CSTenant = (Get-CsTenant).DisplayName}
-    catch{}
-    If ($CSTenant -ne $null){    
+    try{
+        $CSTenant = (Get-CsTenant).DisplayName
         Write-LogEntry -LogName:$Log -LogEntryText "Connected to Skype for Business Online" -ForegroundColor Green
     }
-    Else {
+    catch{
         try{
             Import-Module SkypeOnlineConnector
-            $sfbSession = New-CsOnlineSession #not passing the $credential beause of AADSTS90014 error
+            If ($Credential -eq $null){
+                $Credential = get-credential -credential $null
+            }
+            $sfbSession = New-CsOnlineSession -Credential $Credential #not passing the $credential beause of AADSTS90014 error
             Import-PSSession $sfbSession | out-null
             Write-LogEntry -LogName:$Log -LogEntryText "Connected to Skype for Business Online" -ForegroundColor Green   
+
         }
         catch{
-            Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Skype for Business Online: $_" -ForegroundColor Red
-            $gotError = $true
+            try{
+                Import-Module SkypeOnlineConnector
+                $sfbSession = New-CsOnlineSession #not passing the $credential beause of AADSTS90014 error
+                Import-PSSession $sfbSession | out-null
+                Write-LogEntry -LogName:$Log -LogEntryText "Connected to Skype for Business Online" -ForegroundColor Green   
+            }
+            catch{
+                Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Skype for Business Online: $_" -ForegroundColor Red
+                $gotError = $true
+            }
         }
     }
 
-    #Compliance Center
-    #Getting Access Denied errors. Commenting out for now
+    #SCC - Compliance Center
     <#
     If (Get-PSSession | where {($_.ComputerName -eq "ps.compliance.protection.outlook.com") -and ($_.State -eq "Opened")}) {
         Write-LogEntry -LogName:$Log -LogEntryText "Connected to Compliance Center" -ForegroundColor Green    
     }
-    Else{
+    #>
+    try{
+        $testSCC = Get-DlpSensitiveInformationType
+        Write-LogEntry -LogName:$Log -LogEntryText "Connected to Security and Compliance Center" -ForegroundColor Green
+    }
+    catch{
         try{
-            If ($Credential -eq $null){
-                $Credential = get-credential -credential $null
+            $Credential = get-credential -credential $null #Prompt for credential again since re-using creds has been throwing Access Denied
+            $ccSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://ps.compliance.protection.outlook.com/powershell-liveid/ -Credential $Credential -Authentication Basic -AllowRedirection -WarningAction SilentlyContinue -ErrorVariable ConnectError
+            If($ccSession){
+                Import-PSSession -session $ccSession -Prefix cc -DisableNameChecking -AllowClobber | out-null
+                #Import-Module (Import-PSSession $ccSession -DisableNameChecking -AllowClobber) -Global -DisableNameChecking | out-null
+                Write-LogEntry -LogName:$Log -LogEntryText "Connected to Compliance Center" -ForegroundColor Green    
             }
-            $ccSession = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://ps.compliance.protection.outlook.com/powershell-liveid/ -Credential $Credential -Authentication Basic -AllowRedirection -WarningAction SilentlyContinue
-            Import-PSSession -session $ccSession -Prefix cc -DisableNameChecking -AllowClobber | out-null
-            #Import-Module (Import-PSSession $ccSession -DisableNameChecking -AllowClobber) -Global -DisableNameChecking | out-null
-            Write-LogEntry -LogName:$Log -LogEntryText "Connected to Compliance Center" -ForegroundColor Green
+            Else{
+                Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Compliance Center: $($ConnectError[0].ErrorDetails)" -ForegroundColor Red
+                $gotError = $true 
+            }
         }
         catch{
             Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Compliance Center: $_" -ForegroundColor Red
             $gotError = $true 
         }
     }
-    #>
 
     #Azure AD 
-    try{$testAAD = Get-AzureADCurrentSessionInfo -erroraction silentlycontinue}
-    catch{}
-    If($testAAD -ne $null){
+    try{
+        $testAAD = Get-AzureADCurrentSessionInfo -erroraction silentlycontinue
         Write-LogEntry -LogName:$Log -LogEntryText "Connected to Azure AD" -ForegroundColor Green
     }
-    Else{
+    catch{
         try{
-            #Need AzureADPreview 2.0.0.137 for Get-AzureADMSGroupLifecyclePolicy 
-            #If AzureAD module (Not AzureADPreview) is also available, then the AzureADPreview module is not loaded
             $checkAzureADModule = get-module -name "AzureAD"
             If($checkforAzureADModule -ne $null){
                 Remove-Module -Name "AzureAD"
             }
             Import-module -Name AzureADPreview
-            Connect-AzureAD | out-null #prompt for credential due to issue: AADSTS90014
+            If ($Credential -eq $null){
+                $Credential = get-credential -credential $null
+            }
+            Connect-AzureAD -Credential $Credential | out-null #prompt for credential due to issue: AADSTS90014
             Write-LogEntry -LogName:$Log -LogEntryText "Connected to Azure AD" -ForegroundColor Green
+
         }
         catch{
-            Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Azure AD: $_" -ForegroundColor Red
-            $gotError = $true
+            try{
+                #Need AzureADPreview 2.0.0.137 for Get-AzureADMSGroupLifecyclePolicy 
+                #If AzureAD module (Not AzureADPreview) is also available, then the AzureADPreview module is not loaded
+                $checkAzureADModule = get-module -name "AzureAD"
+                If($checkforAzureADModule -ne $null){
+                    Remove-Module -Name "AzureAD"
+                }
+                Import-module -Name AzureADPreview
+                Connect-AzureAD | out-null #prompt for credential due to issue: AADSTS90014
+                Write-LogEntry -LogName:$Log -LogEntryText "Connected to Azure AD" -ForegroundColor Green
+            }
+            catch{
+                Write-LogEntry -LogName:$Log -LogEntryText "Unable to connect to Azure AD: $_" -ForegroundColor Red
+                $gotError = $true
+            }
+
         }
+
     }
+
     ""
     If($gotError -eq $true){
         Write-LogEntry -LogName:$Log -LogEntryText "There was an error connecting to one of the services. Re-run Step 1 and try again." -ForegroundColor Yellow
@@ -714,7 +837,6 @@ function GetExistingBlockedDomainList(){
 
 #Get list of Teams
 Function Get-Teams{
-    #Using David Whitney (dawhitne@microsoft.com) method of identifying Teams based on http status code
     param (
         [switch]$ExportToCSV
     )
@@ -737,55 +859,90 @@ Function Get-Teams{
     }
 
     Write-LogEntry -LogName:$Log -LogEntryText "Getting Teams report..." -ForegroundColor Yellow
-    $o365groups = Get-UnifiedGroup -ResultSize Unlimited | where-object{$_.sharepointsiteurl -ne $null}
 
-    $global:ListOfGroupsTeams = New-Object System.Collections.ArrayList
-    #$storageHash = @{"test"=@{"storage"="1";"quota"="2"}}
+    If(Test-Path $TeamsCSV){
+        Write-LogEntry -LogName:$Log -LogEntryText "Found existing Teams report, re-using..." -ForegroundColor Yellow
+        $global:ListOfGroupsTeams = Import-Csv $TeamsCSV
+    }
+    Else{
+        $o365groups = Get-UnifiedGroup -ResultSize Unlimited | where-object{$_.sharepointsiteurl -ne $null}
 
-    $count = $o365groups.count
-    $i = 0
-    Write-LogEntry -LogName:$Log -LogEntryText "Found $count O365 Groups. Checking how many are also Teams..." -ForegroundColor White
-    foreach ($o365group in $o365groups) {
-        Write-Progress -Activity "Getting Teams Info..." -Status "Processed $i of $count " -PercentComplete ($i/$count*100);
-        $spoSite = Get-SPOSite -Identity $o365group.SharePointSiteUrl
-        $spoStorageQuota =  "$(($spoSite).StorageQuota)" + "MB"
-        $spoStorageUsed = "$(($spoSite).StorageUsageCurrent)" + "MB"
-        $spoSharingSetting = ($spoSite).SharingCapability
-        
-        #Microsoft Graph Query for Teams: https://developer.microsoft.com/en-us/graph/docs/api-reference/beta/api/group_list_endpoints
+        $global:ListOfGroupsTeams = New-Object System.Collections.ArrayList
+        #$storageHash = @{"test"=@{"storage"="1";"quota"="2"}}
 
-        try {
-            $GroupsUri = "https://graph.microsoft.com/beta/groups/$($o365group.ExternalDirectoryObjectId)/endpoints"
-            $groupDetails = (Invoke-RestMethod -Uri $GroupsUri -Headers $authHeader -Method Get).value
+        $count = $o365groups.count
+        $i = 0
+        Write-LogEntry -LogName:$Log -LogEntryText "Found $count O365 Groups. Checking how many are also Teams..." -ForegroundColor White
+        foreach ($o365group in $o365groups) {
+            Write-Progress -Activity "Getting Teams Info..." -Status "Processed $i of $count " -PercentComplete ($i/$count*100);
+            $spoSite = Get-SPOSite -Identity $o365group.SharePointSiteUrl
+            $spoStorageQuota =  "$(($spoSite).StorageQuota)" + "MB"
+            $spoStorageUsed = "$(($spoSite).StorageUsageCurrent)" + "MB"
+            $spoSharingSetting = ($spoSite).SharingCapability
+            $start = (get-date $o365group.WhenCreatedUTC).adddays(-1)
+            $end = (get-date $o365group.WhenCreatedUTC).adddays(1)
 
-            If($groupDetails){
-                If($groupDetails.providerName -eq "Microsoft Teams"){
-                    $GroupTeam = [pscustomobject]@{GroupId = $o365group.ExternalDirectoryObjectId; 
-                        GroupName = $o365group.DisplayName;
-                        TeamsEnabled = $true;
-                        Provider = $groupDetails.providerName;
-                        ManagedBy = $o365group.ManagedBy 
-                        WhenCreated = $o365group.WhenCreated;
-                        PrimarySMTPAddress = $o365group.PrimarySMTPAddress;
-                        GroupGuestSetting = $o365group.AllowAddGuests;
-                        GroupAccessType = $o365group.AccessType;
-                        GroupClassification = $o365group.Classification;
-                        GroupMemberCount = $o365group.GroupMemberCount;
-                        GroupExtMemberCount = $o365group.GroupExternalMemberCount; 
-                        SPOSiteUrl =  $o365group.SharePointSiteUrl;
-                        SPOStorageUsed = $spoStorageUsed;
-                        SPOtorageQuota = $spoStorageQuota ;
-                        SPOSharingSetting = $spoSharingSetting;
+            #Microsoft Graph Query for Teams: https://developer.microsoft.com/en-us/graph/docs/api-reference/beta/api/group_list_endpoints
+            try {
+                $GroupsUri = "https://graph.microsoft.com/beta/groups/$($o365group.ExternalDirectoryObjectId)/endpoints"
+                $groupDetails = (Invoke-RestMethod -Uri $GroupsUri -Headers $authHeader -Method Get).value
+
+                #Creator not available yet: https://graph.microsoft.com/v1.0/groups/aba16e77-0c12-46bf-bbd0-b46c0fab6a69/createdOnBehalfOf
+                $groupCreator = (Search-UnifiedAuditLog -StartDate $start -EndDate $end -Operations "Add Group"  | ?{$_.auditdata -like "*$($o365group.ExternalDirectoryObjectId)*"}).UserIDs
+
+                If($groupDetails){
+                    If($groupDetails.providerName -eq "Microsoft Teams"){
+                        $GroupTeam = [pscustomobject]@{GroupId = $o365group.ExternalDirectoryObjectId; 
+                            GroupName = $o365group.DisplayName;
+                            TeamsEnabled = $true;
+                            Provider = $groupDetails.providerName;
+                            GroupCreator = $groupCreator;
+                            ManagedBy = $o365group.ManagedBy; 
+                            WhenCreated = $o365group.WhenCreatedUTC;
+                            PrimarySMTPAddress = $o365group.PrimarySMTPAddress;
+                            GroupGuestSetting = $o365group.AllowAddGuests;
+                            GroupAccessType = $o365group.AccessType;
+                            GroupClassification = $o365group.Classification;
+                            GroupMemberCount = $o365group.GroupMemberCount;
+                            GroupExtMemberCount = $o365group.GroupExternalMemberCount; 
+                            SPOSiteUrl =  $o365group.SharePointSiteUrl;
+                            SPOStorageUsed = $spoStorageUsed;
+                            SPOtorageQuota = $spoStorageQuota ;
+                            SPOSharingSetting = $spoSharingSetting;
+                        }
+                        $ListOfGroupsTeams.add($GroupTeam) | out-null
                     }
-                    $ListOfGroupsTeams.add($GroupTeam) | out-null
+                    Else{
+                        $GroupTeam = [pscustomobject]@{GroupId = $o365group.ExternalDirectoryObjectId; 
+                            GroupName = $o365group.DisplayName;
+                            TeamsEnabled = $false;
+                            Provider = $groupDetails.providerName;
+                            GroupCreator = $groupCreator;
+                            ManagedBy = $o365group.ManagedBy;
+                            WhenCreated = $o365group.WhenCreatedUTC;
+                            PrimarySMTPAddress = $o365group.PrimarySMTPAddress;
+                            GroupGuestSetting = $o365group.AllowAddGuests;
+                            GroupAccessType = $o365group.AccessType;
+                            GroupClassification = $o365group.Classification;
+                            GroupMemberCount = $o365group.GroupMemberCount;
+                            GroupExtMemberCount = $o365group.GroupExternalMemberCount; 
+                            SPOSiteUrl =  $o365group.SharePointSiteUrl;
+                            SPOStorageUsed = $spoStorageUsed;
+                            SPOtorageQuota = $spoStorageQuota ;
+                            SPOSharingSetting = $spoSharingSetting;
+                        }
+                        $ListOfGroupsTeams.add($GroupTeam) | out-null
+                    }
+
                 }
                 Else{
                     $GroupTeam = [pscustomobject]@{GroupId = $o365group.ExternalDirectoryObjectId; 
                         GroupName = $o365group.DisplayName;
                         TeamsEnabled = $false;
-                        Provider = $groupDetails.providerName;
-                        ManagedBy = $o365group.ManagedBy 
-                        WhenCreated = $o365group.WhenCreated;
+                        Provider = "";
+                        GroupCreator = $groupCreator;
+                        ManagedBy = $o365group.ManagedBy;
+                        WhenCreated = $o365group.WhenCreatedUTC;
                         PrimarySMTPAddress = $o365group.PrimarySMTPAddress;
                         GroupGuestSetting = $o365group.AllowAddGuests;
                         GroupAccessType = $o365group.AccessType;
@@ -799,33 +956,12 @@ Function Get-Teams{
                     }
                     $ListOfGroupsTeams.add($GroupTeam) | out-null
                 }
-
             }
-            Else{
-                $GroupTeam = [pscustomobject]@{GroupId = $o365group.ExternalDirectoryObjectId; 
-                    GroupName = $o365group.DisplayName;
-                    TeamsEnabled = $false;
-                    Provider = "";
-                    ManagedBy = $o365group.ManagedBy 
-                    WhenCreated = $o365group.WhenCreated;
-                    PrimarySMTPAddress = $o365group.PrimarySMTPAddress;
-                    GroupGuestSetting = $o365group.AllowAddGuests;
-                    GroupAccessType = $o365group.AccessType;
-                    GroupClassification = $o365group.Classification;
-                    GroupMemberCount = $o365group.GroupMemberCount;
-                    GroupExtMemberCount = $o365group.GroupExternalMemberCount; 
-                    SPOSiteUrl =  $o365group.SharePointSiteUrl;
-                    SPOStorageUsed = $spoStorageUsed;
-                    SPOtorageQuota = $spoStorageQuota ;
-                    SPOSharingSetting = $spoSharingSetting;
-                }
-                $ListOfGroupsTeams.add($GroupTeam) | out-null
+            catch{
+                Write-LogEntry -LogName:$Log -LogEntryText "Error with Group: $($o365group.PrimarySMTPAddress) :: $_" -ForegroundColor White
             }
+            $i++
         }
-        catch{
-            Write-LogEntry -LogName:$Log -LogEntryText "Error with Group: $($o365group.PrimarySMTPAddress) :: $_" -ForegroundColor White
-        }
-        $i++
     }
 
     IF($ExportToCSV){
@@ -836,6 +972,48 @@ Function Get-Teams{
 
 #Get Teams Membership
 Function Get-TeamsMembersGuests(){
+    If(!$ListOfGroupsTeams){
+        Get-Teams
+    }
+
+    #Check for previous report, delete if found to avoid mixed results
+    if (Test-Path $TeamsMemberGuestCSV) {
+        Remove-Item $TeamsMemberGuestCSV
+    }
+
+    $count = $ListOfGroupsTeams.count
+    $i = 0
+    Write-LogEntry -LogName:$Log -LogEntryText "Getting Teams Membership Report..." -ForegroundColor Yellow
+    Write-LogEntry -LogName:$Log -LogEntryText "Processing $count Teams..." -ForegroundColor White
+    foreach ($team in $ListOfGroupsTeams){
+        Write-Progress -Activity "Getting Team Membership..." -Status "Processed $i of $count " -PercentComplete ($i/$count*100);
+        $membership = New-Object System.Collections.ArrayList
+        try{
+            $owners = (Get-UnifiedGroupLinks -Identity $team.GroupID -LinkType Owners | select -ExpandProperty PrimarySMTPAddress) -join "; " 
+            $members = (Get-UnifiedGroupLinks -Identity $team.GroupID -LinkType Members | ?{$_.Name -notlike "*#EXT#*"} | select -ExpandProperty PrimarySMTPAddress) -join "; " 
+            $guests = (Get-UnifiedGroupLinks -Identity $team.GroupID -LinkType Members | ?{$_.Name -like "*#EXT#*"} | select -ExpandProperty PrimarySMTPAddress) -join "; " 
+            $record = [pscustomobject]@{GroupID = $team.GroupID;
+                    GroupName = $team.GroupName;
+                    TeamsEnabled = $team.TeamsEnabled;
+                    GroupEmail = $team.PrimarySMTPAddress;
+                    GroupTotalMemberCount = $team.GroupMemberCount;
+                    GroupEXTMemberCount = $team.GroupExtMemberCount;
+                    Owners = $owners;
+                    Members = $members;
+                    Guests = $guests}
+            $membership.add($record) | out-null
+        }
+        catch{
+            Write-LogEntry -LogName:$Log -LogEntryText "Membership report error with: $team" 
+        }
+        $i++
+
+        #Flush membership after every team to maintain low memory usage
+        $membership | Export-CSV -Path $TeamsMemberGuestCSV -append -NoTypeInformation
+    }    
+}
+
+Function Get-TeamsMembersGuestsExpanded(){
     If(!$ListOfGroupsTeams){
         Get-Teams
     }
@@ -1030,16 +1208,15 @@ Function Get-TeamsSettings{
 
 #Get Teams not being used
 Function Get-InactiveTeams(){
-    $inactiveDays = -90
-
-    $WarningDate = (Get-Date).AddDays($inactiveDays) #90 days
+    $inactiveDays = 90
+    $WarningDate = (Get-Date).AddDays(-$inactiveDays) #90 days
     $Today = (Get-Date)
     $Date = $Today.ToShortDateString()
 
     Write-LogEntry -LogName:$Log -LogEntryText "Getting Inactive Teams Report Based on Inactivity for $inactiveDays Days..." -ForegroundColor Yellow
 
     If(!$ListOfGroupsTeams){
-        Write-LogEntry -LogName:$Log -LogEntryText "List of Teams Not Found, Getting That Report First..." -ForegroundColor White
+        Write-LogEntry -LogName:$Log -LogEntryText "Getting listing of Teams first..." -ForegroundColor White
         Get-Teams
     }
 
@@ -1050,42 +1227,130 @@ Function Get-InactiveTeams(){
     foreach($team in $ListOfGroupsTeams){
         Write-Progress -Activity "Getting InActive Teams Info..." -Status "Processed $i of $count " -PercentComplete ($i/$count*100);
         # Fetch information about activity in the Inbox folder of the group mailbox  
-        $Data = (Get-MailboxFolderStatistics -Identity $team.PrimarySMTPAddress -IncludeOldestAndNewestITems -FolderScope Inbox)
-        $LastConversation = $Data.NewestItemReceivedDate
-        $NumberConversations = $Data.ItemsInFolder
-        $MailboxStatus = "Normal"
+        $GroupMailConvo = Get-MailboxFolderStatistics -Identity $team.PrimarySMTPAddress -IncludeOldestAndNewestITems -FolderScope Inbox
+        $TeamsChatConvo = Get-MailboxFolderStatistics -Identity $team.PrimarySMTPAddress -IncludeOldestAndNewestItems -FolderScope ConversationHistory 
+        $MailboxStatus = "Active"
+        $SPOStatus = "Active"
+        $TeamsChatStatus = "Active"
+        $SPOLastItemUserModifiedDate = ""
+        $web = ""
+
+        try{
+            connect-pnponline -Url $team.SPOSiteUrl -Credentials $pnpConnection.pscredential | Out-Null
+            $web = get-pnpweb -Includes LastItemUserModifiedDate
+        }
+        catch{
+            $Exception = $_.Exception
+            $ErrorCode = $Exception.ErrorCode
+            If($ErrorCode -like "401" -or $ErrorCode -like "403"){
+                If($addAdminToAllSites -eq $true){
+                    try{
+                        Set-SPOUser -Site $team.SPOSiteUrl -LoginName $adminUPN -IsSiteCollectionAdmin $true | Out-Null
+                        connect-pnponline -Url $team.SPOSiteUrl -Credentials $pnpConnection.pscredential | Out-Null
+                        $web = get-pnpweb -Includes LastItemUserModifiedDate
+                    }
+                    catch{
+                        Write-LogEntry -LogName:$Log -LogEntryText "INFO: $($team.PrimarySMTPAddress): $($team.SPOSiteUrl) : $_" 
+                        $web = ""
+                    }
+                }
+                ElseIf($dontAddAdminToAllSites -eq $true){
+                    Write-LogEntry -LogName:$Log -LogEntryText "INFO: $($team.PrimarySMTPAddress): $($team.SPOSiteUrl) : $_" 
+                    $web = ""
+                }
+                Else{
+                    Write-LogEntry -LogName:$Log -LogEntryText "You don't have access to this site $($team.SPOSiteUrl). This is needed to get the LastItemUserModifiedDate in SPO. Would you like to be added as Site Collection Administrator?" -ForegroundColor White
+                    $askToBeAddedToSCA = Read-Host "Y = Yes for this site | N = No for this site | YA = Yes to all sites | NA = No to all sites "
+    
+                    If($askToBeAddedToSCA -eq "y"){
+                        try{
+                            Set-SPOUser -Site $team.SPOSiteUrl -LoginName $adminUPN -IsSiteCollectionAdmin $true | Out-Null
+                            connect-pnponline -Url $team.SPOSiteUrl -Credentials $pnpConnection.pscredential | Out-Null
+                            $web = get-pnpweb -Includes LastItemUserModifiedDate
+                        }
+                        catch{
+                            Write-LogEntry -LogName:$Log -LogEntryText "INFO: $($team.PrimarySMTPAddress): $($team.SPOSiteUrl) : $_" 
+                            $web = ""
+                        }
+                    }
+                    ElseIf($askToBeAddedToSCA -eq "ya"){
+                        $addAdminToAllSites = $true
+                        try{
+                            Set-SPOUser -Site $team.SPOSiteUrl -LoginName $adminUPN -IsSiteCollectionAdmin $true | Out-Null
+                            connect-pnponline -Url $team.SPOSiteUrl -Credentials $pnpConnection.pscredential | Out-Null
+                            $web = get-pnpweb -Includes LastItemUserModifiedDate
+                        }
+                        catch{
+                            Write-LogEntry -LogName:$Log -LogEntryText "INFO: $($team.PrimarySMTPAddress): $($team.SPOSiteUrl) : $_" 
+                            $web = ""
+                        }
+                    }
+                    ElseIf($askToBeAddedToSCA -eq "na"){
+                        $dontAddAdminToAllSites = $true
+                        Write-LogEntry -LogName:$Log -LogEntryText "INFO: $($team.PrimarySMTPAddress): $($team.SPOSiteUrl) : $_" 
+                        $web = ""
+                    }
+                    ElseIf($askToBeAddedToSCA -eq "n"){
+                        Write-LogEntry -LogName:$Log -LogEntryText "INFO: $($team.PrimarySMTPAddress): $($team.SPOSiteUrl) : $_" 
+                        $web = ""
+                    }
+                    Else{
+                        Write-LogEntry -LogName:$Log -LogEntryText "INFO: Invalid Input for Prompt to Add Site Collection Admin : $($team.PrimarySMTPAddress): $($team.SPOSiteUrl) : $_" 
+                        $web = ""
+                    }
+                }
+            }
+            Else{
+                Write-LogEntry -LogName:$Log -LogEntryText "Unable to Get-PNPWeb : $($team.PrimarySMTPAddress): $($team.SPOSiteUrl) : $_" 
+                $web = ""
+            }
+        }
         
-        If ($Data.NewestItemReceivedDate -le $WarningDate){
-            #days since any activity in the group mailbox
+        $SPOLastItemUserModifiedDate = $web.LastItemUserModifiedDate
+        #If(!$SPOLastItemUserModifiedDate){
+        #    $SPOLastItemUserModifiedDate = "NeedPermissionsToSite"
+            #Script to add user as site collection admin. This is for ODB but can be adapted to SPO: https://support.office.com/en-us/article/Assign-eDiscovery-permissions-to-OneDrive-for-Business-sites-422858ff-917b-46d4-9e5b-3397f60eee4d
+        #}
+        $SPOStorageUsageCurrent = (get-sposite $team.SPOSiteUrl).StorageUsageCurrent
+        
+        If ($TeamsChatConvo.NewestItemReceivedDate -le $WarningDate){
+            $TeamsChatStatus = "Inactive"
+        }
+        If ($GroupMailConvo.NewestItemReceivedDate -le $WarningDate){
             $MailboxStatus = "Inactive"
         }
-        <# If want to check for items in folder
-            If ($Data.ItemsInFolder -lt 20){
-                #Less than 20 conversations
-                $MailboxStatus = "Inactive"
+        If ($SPOLastItemUserModifiedDate -le $WarningDate){
+            $SPOStatus = "Inactive"
+        }
+
+        <# Can't use LastContentModifiedDate. ISSUE: https://sharepoint.uservoice.com/forums/329214-sites-and-collaboration/suggestions/15112005-modified-dates-in-site-contents-should-reflect-con
+            $SPOLastContentModified = (get-sposite $team.SPOSiteUrl).LastContentModifiedDate
+            If ($SPOLastContentModified -le $WarningDate){
+                $SPOStatus = "Inactive"
             }
         #>
 
-        $SPOLastContentModified = (get-sposite $team.SPOSiteUrl).LastContentModifiedDate
-        <# If want to check for usage
-            #$SPOStorageUsageCurrent = (get-sposite $team.SPOSiteUrl).StorageUsageCurrent
-        #>
-        $SPOStatus = "Active"
-
-        If ($SPOLastContentModified -le $WarningDate){
-            $SPOStatus = "Inactive"
+        If($TeamsChatConvo.NewestItemReceivedDate){
+            $LastTeamsChatDate = $TeamsChatConvo.NewestItemReceivedDate.DateTime
+        }
+        If($TeamsChatConvo.ItemsInFolder){
+            #$NumOfTeamsChats = ($TeamsChatConvo.ItemsInFolder | Out-String).trim()
+            $NumOfTeamsChats = $TeamsChatConvo.ItemsInFolder[$TeamsChatConvo.ItemsInFolder.Count - 1]
         }
 
         $record = [pscustomobject]@{GroupID = $team.GroupID;
             Name = $team.GroupName;
             TeamsEnabled = $team.TeamsEnabled;
             PrimarySMTPAddress = $team.PrimarySMTPAddress;
+            TeamsChatStatus = $TeamsChatStatus;
+            LastTeamsChatDate = $LastTeamsChatDate;
+            NumOfTeamsChats = $NumOfTeamsChats;
             MailboxStatus = $MailboxStatus;
-            LastConversationDate = $Data.NewestItemReceivedDate;
-            NumOfConversations = $Data.ItemsInFolder;
+            LastGroupEmailDate = $GroupMailConvo.NewestItemReceivedDate;
+            NumOfGroupEmails = $GroupMailConvo.ItemsInFolder;
             SPOStatus = $SPOStatus;
-            LastContentModified = $SPOLastContentModified;
-            StorageUsageCurrent = $SPOStorageUsageCurrent;
+            SPOLastItemUserModifiedDate = $SPOLastItemUserModifiedDate;
+            SPOStorageUsageCurrent = $SPOStorageUsageCurrent;
         }
         $inactiveTeams.add($record) | out-null
         $i++
@@ -1239,7 +1504,7 @@ Clear-Host
 $yyyyMMdd = Get-Date -Format 'yyyyMMdd'
 $computer = $env:COMPUTERNAME
 $user = $env:USERNAME
-$version = "06112018"
+$version = "06272018"
 $log = "$PSScriptRoot\Manage-Teams-$yyyyMMdd.log"
 $output = $PSScriptRoot
 $TeamsCSV = "$($output)\ListOfTeams.csv"
